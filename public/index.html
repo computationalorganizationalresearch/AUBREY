@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dog Trainer AI v2</title>
+  <link rel="stylesheet" href="./styles/base.css" />
+  <link rel="stylesheet" href="./styles/layout.css" />
+  <link rel="stylesheet" href="./styles/hud.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>🐶 Dog Trainer AI v2</h1>
+    <div class="stage-buttons">
+      <button id="btnStage1">Stage 1 (Acquisition)</button>
+      <button id="btnStage2">Stage 2 (Reinforcement)</button>
+      <button id="btnStage3">Stage 3 (Nanny)</button>
+      <button id="btnPause">Pause</button>
+      <button id="btnStop">Stop</button>
+      <a href="./calibration.html"><button id="btnCalibration">Calibration</button></a>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="card">
+      <h2>Camera</h2>
+      <div class="controls-row">
+        <label for="cameraSelect">Webcam</label>
+        <select id="cameraSelect"></select>
+        <button id="refreshCam">Refresh</button>
+        <button id="startCam">Start</button>
+        <button id="stopCam">Stop</button>
+      </div>
+      <video id="webcam" autoplay playsinline muted></video>
+      <canvas id="snapshotCanvas" width="640" height="360" hidden></canvas>
+      <div class="chips">
+        <span id="dogPresence" class="chip">Dog Presence: Unknown</span>
+        <span id="modelStatus" class="chip">Model: Idle</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Settings</h2>
+      <div class="settings-grid">
+        <label>Session Code <input id="sessionCode" placeholder="DOG123" /></label>
+        <label>Min Interval (s) <input id="minInterval" type="number" value="5" min="1" /></label>
+        <label>Max Interval (s) <input id="maxInterval" type="number" value="12" min="2" /></label>
+        <label>Confidence Threshold <input id="absThreshold" type="number" value="0.55" step="0.01" /></label>
+        <label>Margin Threshold <input id="marginThreshold" type="number" value="0.12" step="0.01" /></label>
+        <label>Neutral Dominance <input id="neutralThreshold" type="number" value="0.52" step="0.01" /></label>
+      </div>
+      <h3>W/A/S/D Mapping</h3>
+      <div class="mapping-grid">
+        <label>W <select id="mapW"></select></label>
+        <label>A <select id="mapA"></select></label>
+        <label>S <select id="mapS"></select></label>
+        <label>D <select id="mapD"></select></label>
+      </div>
+      <div class="controls-row">
+        <button id="saveSettings">Save Settings</button>
+        <button id="rewardManual">Manual Reward</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>HUD / Metrics</h2>
+      <div class="metrics-grid">
+        <div class="metric"><span>Stage</span><strong id="mStage">idle</strong></div>
+        <div class="metric"><span>Current Command</span><strong id="mCommand">-</strong></div>
+        <div class="metric"><span>Attempts</span><strong id="mAttempts">0</strong></div>
+        <div class="metric"><span>Rewards</span><strong id="mRewards">0</strong></div>
+        <div class="metric"><span>Misses</span><strong id="mMisses">0</strong></div>
+        <div class="metric"><span>Uncertain</span><strong id="mUncertain">0</strong></div>
+        <div class="metric"><span>Success %</span><strong id="mSuccess">0.0%</strong></div>
+        <div class="metric"><span>Streak</span><strong id="mStreak">0</strong></div>
+      </div>
+      <progress id="sessionProgress" value="0" max="100"></progress>
+      <pre id="logs"></pre>
+    </section>
+  </main>
+
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>

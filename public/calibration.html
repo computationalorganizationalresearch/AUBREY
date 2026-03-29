@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dog Trainer AI v2 - Calibration</title>
+  <link rel="stylesheet" href="./styles/base.css" />
+  <link rel="stylesheet" href="./styles/layout.css" />
+  <link rel="stylesheet" href="./styles/hud.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>🎯 Calibration</h1>
+    <div class="stage-buttons">
+      <a href="./index.html"><button>Back to Main App</button></a>
+    </div>
+  </header>
+
+  <main class="layout calibration-layout">
+    <section class="card">
+      <h2>Live Webcam</h2>
+      <div class="controls-row">
+        <label for="cameraSelect">Webcam</label>
+        <select id="cameraSelect"></select>
+        <button id="refreshCam">Refresh</button>
+        <button id="startCam">Start</button>
+        <button id="stopCam">Stop</button>
+      </div>
+      <video id="webcam" autoplay playsinline muted></video>
+      <canvas id="snapshotCanvas" width="640" height="360" hidden></canvas>
+      <div class="chips">
+        <span id="modelStatus" class="chip">Model: Idle</span>
+        <span id="topPrediction" class="chip">Top: -</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Command Probabilities (Real-time)</h2>
+      <p>Classes: sit, lay down, shake paw, neutral</p>
+      <div class="prob-list" id="probList"></div>
+      <pre id="logs"></pre>
+    </section>
+  </main>
+
+  <script type="module" src="./src/calibration.js"></script>
+</body>
+</html>
