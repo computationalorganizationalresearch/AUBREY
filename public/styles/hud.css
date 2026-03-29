@@ -29,3 +29,39 @@
 }
 .metric strong { font-size: 18px; }
 #sessionProgress { width: 100%; margin-bottom: 10px; }
+
+.calibration-layout {
+  grid-template-columns: 1.2fr 1fr;
+}
+
+.prob-list {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0 12px;
+}
+
+.prob-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: #121824;
+}
+
+.prob-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.prob-track {
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #0e1420;
+  overflow: hidden;
+}
+
+.prob-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4dd2ff, #4dffb8);
+}
