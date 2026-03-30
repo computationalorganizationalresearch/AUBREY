@@ -1,6 +1,6 @@
 import { CameraManager } from "./camera/cameraManager.js";
 import { FrameSampler } from "./camera/frameSampler.js";
-import { loadPipeline, ClassifierAdapter } from "./ml/modelLoader.js";
+import { DogPoseEstimator } from "./ml/modelLoader.js";
 
 const els = {
   cameraSelect: document.getElementById("cameraSelect"),
@@ -15,13 +15,7 @@ const els = {
   logs: document.getElementById("logs"),
 };
 
-const COMMAND_LABELS = {
-  sit: ["dog sitting", "dog seated"],
-  come: ["dog approaching camera", "dog moving toward person"],
-  "lay down": ["dog lying down", "dog laying on floor"],
-  back: ["dog moving backward", "dog stepping back"],
-  neutral: ["dog neutral", "dog idle", "dog unclear pose", "dog standing"],
-};
+const CLASSES = ["sit", "lay down", "shake paw", "neutral"];
 
 const log = (msg) => {
   const line = `${new Date().toLocaleTimeString()} ${msg}`;
@@ -31,7 +25,7 @@ const log = (msg) => {
 const cameraManager = new CameraManager(els.webcam);
 const frameSampler = new FrameSampler(els.webcam, els.snapshotCanvas);
 
-let classifier = null;
+let estimator = null;
 let pollTimer = null;
 
 function setModelStatus(v) {
@@ -44,9 +38,10 @@ function setTop(v) {
 
 function renderBars(scores) {
   const entries = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-  els.probList.innerHTML = entries.map(([label, score]) => {
-    const pct = Math.max(0, Math.min(100, score * 100));
-    return `
+  els.probList.innerHTML = entries
+    .map(([label, score]) => {
+      const pct = Math.max(0, Math.min(100, score * 100));
+      return `
       <div class="prob-row">
         <div class="prob-head">
           <strong>${label}</strong>
@@ -55,41 +50,29 @@ function renderBars(scores) {
         <div class="prob-track"><div class="prob-fill" style="width:${pct}%"></div></div>
       </div>
     `;
-  }).join("");
+    })
+    .join("");
 }
 
 async function refreshCameras() {
   const cams = await cameraManager.listCameras();
-  els.cameraSelect.innerHTML = cams
-    .map((c) => `<option value="${c.deviceId}">${c.label || "Camera"}</option>`)
-    .join("");
+  els.cameraSelect.innerHTML = cams.map((c) => `<option value="${c.deviceId}">${c.label || "Camera"}</option>`).join("");
 }
 
 async function initModel() {
-  setModelStatus("Loading");
-  const pipe = await loadPipeline();
-  classifier = new ClassifierAdapter(pipe);
-  setModelStatus("Ready");
+  setModelStatus("Loading pose model");
+  estimator = await DogPoseEstimator.create();
+  setModelStatus("Ready (dog pose)");
 }
 
 async function inferOnce() {
-  if (!classifier || !cameraManager.stream) return;
+  if (!estimator || !cameraManager.stream) return;
 
-  const frame = frameSampler.captureFrame();
-  const flatLabels = Object.values(COMMAND_LABELS).flat();
-  const out = await classifier.classify(frame, flatLabels);
+  const frame = frameSampler.captureImageData();
+  const pose = await estimator.inferPose(frame);
+  const scores = pose.probs || { sit: 0, "lay down": 0, "shake paw": 0, neutral: 1 };
 
-  const scoreFor = (labels) => labels.reduce((m, l) => Math.max(m, out.find((x) => x.label === l)?.score || 0), 0);
-
-  const scores = {
-    sit: scoreFor(COMMAND_LABELS.sit),
-    come: scoreFor(COMMAND_LABELS.come),
-    "lay down": scoreFor(COMMAND_LABELS["lay down"]),
-    back: scoreFor(COMMAND_LABELS.back),
-    neutral: scoreFor(COMMAND_LABELS.neutral),
-  };
-
-  const top = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
+  const top = Object.entries(scores).sort((a, b) => b[1] - a[1])[0] || ["neutral", 1];
   setTop(`${top[0]} (${(top[1] * 100).toFixed(1)}%)`);
   renderBars(scores);
 }
@@ -98,7 +81,7 @@ function startPolling() {
   stopPolling();
   pollTimer = setInterval(() => {
     inferOnce().catch((e) => log(`Inference error: ${e.message}`));
-  }, 600);
+  }, 400);
 }
 
 function stopPolling() {
@@ -114,5 +97,8 @@ els.stopCam.onclick = () => {
 };
 
 await refreshCameras();
-await initModel().catch((e) => log(`Model init failed: ${e.message}`));
-renderBars({ sit: 0, come: 0, "lay down": 0, back: 0, neutral: 0 });
+await initModel().catch((e) => {
+  setModelStatus("Failed");
+  log(`Pose model init failed: ${e.message}. Place an ONNX dog pose model at /models/dog-pose.onnx`);
+});
+renderBars(Object.fromEntries(CLASSES.map((c) => [c, c === "neutral" ? 1 : 0])));

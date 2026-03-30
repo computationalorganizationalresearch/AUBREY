@@ -8,7 +8,7 @@ import { CameraManager } from "./camera/cameraManager.js";
 import { FrameSampler } from "./camera/frameSampler.js";
 import { ApiClient } from "./api/apiClient.js";
 import { HudController } from "./ui/hudController.js";
-import { loadPipeline, ClassifierAdapter } from "./ml/modelLoader.js";
+import { DogPoseEstimator } from "./ml/modelLoader.js";
 import { DogPresenceDetector } from "./ml/dogPresenceDetector.js";
 import { CommandVerifier } from "./ml/commandVerifier.js";
 import { Stage1Acquisition } from "./stages/stage1.acquisition.js";
@@ -98,19 +98,16 @@ function initCommandMapping() {
 }
 
 async function initModel() {
-  hud.setModelStatus("Loading");
-  const pipe = await loadPipeline();
-  const adapter = new ClassifierAdapter(pipe);
-  commandVerifier = new CommandVerifier({ classifier: adapter });
-  presenceDetector = new DogPresenceDetector(adapter);
-  hud.setModelStatus("Ready");
+  hud.setModelStatus("Loading dog pose model");
+  const poseEstimator = await DogPoseEstimator.create();
+  commandVerifier = new CommandVerifier({ poseEstimator });
+  presenceDetector = new DogPresenceDetector(poseEstimator);
+  hud.setModelStatus("Ready (dog pose)");
 }
 
 async function refreshCameras() {
   const cams = await cameraManager.listCameras();
-  els.cameraSelect.innerHTML = cams
-    .map((c) => `<option value="${c.deviceId}">${c.label || "Camera"}</option>`)
-    .join("");
+  els.cameraSelect.innerHTML = cams.map((c) => `<option value="${c.deviceId}">${c.label || "Camera"}</option>`).join("");
 }
 
 const stage1 = new Stage1Acquisition({ speech, hud });
@@ -121,7 +118,7 @@ const stage3 = new Stage3Nanny({
   frameSampler,
   commandVerifier: {
     setThresholds: () => {},
-    verifyCommandWindow: async () => ({ decision: "NO_DECISION", reason: "model_not_initialized", confidence: 0, margin: 0 })
+    verifyCommandWindow: async () => ({ decision: "NO_DECISION", reason: "model_not_initialized", confidence: 0, margin: 0 }),
   },
   apiClient,
   hud,
@@ -138,13 +135,15 @@ await machine.init({ getSettings });
 initCommandMapping();
 await refreshCameras();
 
-initModel().then(() => {
-  stage3.commandVerifier = commandVerifier;
-  log("Model initialized.");
-}).catch((e) => {
-  hud.setModelStatus("Failed");
-  log(`Model init failed: ${e.message}`);
-});
+initModel()
+  .then(() => {
+    stage3.commandVerifier = commandVerifier;
+    log("Dog pose model initialized.");
+  })
+  .catch((e) => {
+    hud.setModelStatus("Failed");
+    log(`Pose model init failed: ${e.message}. Put ONNX model at /models/dog-pose.onnx`);
+  });
 
 els.refreshCam.onclick = () => refreshCameras().catch((e) => log(e.message));
 els.startCam.onclick = () => cameraManager.start(els.cameraSelect.value).catch((e) => log(e.message));
@@ -173,10 +172,10 @@ document.addEventListener("keydown", (e) => machine.onKey(e));
 setInterval(async () => {
   if (!presenceDetector || !cameraManager.stream) return;
   try {
-    const frame = frameSampler.captureFrame();
+    const frame = frameSampler.captureImageData();
     const p = await presenceDetector.detect(frame);
-    hud.setDogPresence(`${p.present ? "Yes" : "No"} (${p.dogScore.toFixed(2)})`);
+    hud.setDogPresence(`${p.present ? "Yes" : "No"} (${p.dogScore.toFixed(2)}) pose=${p.label}`);
   } catch {
-    // no-op for polling failures
+    // no-op
   }
 }, 2500);

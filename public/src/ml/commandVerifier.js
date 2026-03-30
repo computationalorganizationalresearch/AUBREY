@@ -1,26 +1,18 @@
 const DEFAULTS = {
-  absoluteThreshold: 0.55,
-  marginThreshold: 0.12,
-  neutralDominanceThreshold: 0.52,
+  absoluteThreshold: 0.6,
+  marginThreshold: 0.15,
+  neutralDominanceThreshold: 0.55,
   minSupportFrames: 8,
   maxContradictFrames: 2,
   minFrames: 12,
 };
 
+const COMMANDS = ["sit", "lay down", "shake paw", "neutral"];
+
 export class CommandVerifier {
-  constructor({ classifier, thresholds = {} }) {
-    this.classifier = classifier;
+  constructor({ poseEstimator, thresholds = {} }) {
+    this.poseEstimator = poseEstimator;
     this.cfg = { ...DEFAULTS, ...thresholds };
-    this.labels = {
-      presence: ["dog", "empty room", "person only", "no dog visible"],
-      neutral: ["dog neutral", "dog idle", "dog unclear pose", "motion blur", "occluded dog"],
-      commands: {
-        sit: ["dog sitting", "dog seated"],
-        "lay down": ["dog lying down", "dog laying on floor"],
-        come: ["dog approaching camera", "dog moving toward person"],
-        back: ["dog moving backward", "dog stepping back"],
-      },
-    };
   }
 
   setThresholds(patch) {
@@ -28,17 +20,12 @@ export class CommandVerifier {
   }
 
   async verifyCommandWindow({ frames, command }) {
+    if (!COMMANDS.includes(command)) {
+      return this.#result("NO_DECISION", { reason: "unsupported_command" });
+    }
     if (!Array.isArray(frames) || frames.length < this.cfg.minFrames) {
       return this.#result("NO_DECISION", { reason: "insufficient_frames" });
     }
-    const expected = this.labels.commands[command];
-    if (!expected) return this.#result("NO_DECISION", { reason: "unknown_command" });
-
-    const other = Object.entries(this.labels.commands)
-      .filter(([k]) => k !== command)
-      .flatMap(([, v]) => v);
-
-    const labels = [...expected, ...other, ...this.labels.neutral];
 
     let supportFrames = 0;
     let contradictFrames = 0;
@@ -47,21 +34,19 @@ export class CommandVerifier {
     let marginSum = 0;
 
     for (const frame of frames) {
-      const presence = await this.classifier.classify(frame, this.labels.presence);
-      const dog = this.#scoreOf(presence, "dog");
-      const noDog = Math.max(this.#scoreOf(presence, "empty room"), this.#scoreOf(presence, "no dog visible"));
-      if (dog <= noDog) {
+      const pose = await this.poseEstimator.inferPose(frame);
+      if (!pose.present) {
         contradictFrames += 1;
         continue;
       }
 
-      const out = await this.classifier.classify(frame, labels);
-      const expectedScore = this.#bestScore(out, expected);
-      const neutralScore = this.#bestScore(out, this.labels.neutral);
-      const competitor = Math.max(neutralScore, this.#bestScore(out, other));
-      const margin = expectedScore - competitor;
+      const probs = pose.probs || {};
+      const expectedScore = probs[command] || 0;
+      const competitors = COMMANDS.filter((c) => c !== command);
+      const bestCompetitor = Math.max(...competitors.map((c) => probs[c] || 0));
+      const margin = expectedScore - bestCompetitor;
 
-      if (neutralScore >= this.cfg.neutralDominanceThreshold && neutralScore >= expectedScore) {
+      if (probs.neutral >= this.cfg.neutralDominanceThreshold && command !== "neutral") {
         neutralFrames += 1;
         continue;
       }
@@ -89,14 +74,6 @@ export class CommandVerifier {
     }
 
     return this.#result("FAIL", { reason: "temporal_consensus_failed", supportFrames, contradictFrames, neutralFrames, confidence, margin });
-  }
-
-  #scoreOf(results, label) {
-    return results.find((x) => x.label === label)?.score || 0;
-  }
-
-  #bestScore(results, labels) {
-    return labels.reduce((m, l) => Math.max(m, this.#scoreOf(results, l)), 0);
   }
 
   #result(decision, rest = {}) {

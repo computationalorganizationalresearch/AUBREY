@@ -1,18 +1,15 @@
 export class DogPresenceDetector {
-  constructor(classifier) {
-    this.classifier = classifier;
-    this.labels = ["dog", "empty room", "person only", "no dog visible"];
+  constructor(poseEstimator) {
+    this.poseEstimator = poseEstimator;
   }
 
-  async detect(frame) {
-    const out = await this.classifier.classify(frame, this.labels);
-    const score = (label) => out.find((x) => x.label === label)?.score || 0;
-    const dog = score("dog");
-    const nonDog = Math.max(score("empty room"), score("person only"), score("no dog visible"));
+  async detect(imageData) {
+    const pose = await this.poseEstimator.inferPose(imageData);
     return {
-      present: dog > nonDog && dog >= 0.4,
-      dogScore: dog,
-      raw: out,
+      present: pose.present,
+      dogScore: pose.score || 0,
+      label: pose.label || "neutral",
+      probs: pose.probs || { sit: 0, "lay down": 0, "shake paw": 0, neutral: 1 },
     };
   }
 }

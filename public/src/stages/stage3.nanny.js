@@ -81,7 +81,7 @@ export class Stage3Nanny {
     await this.apiClient.postEvent({ type: "command_issued", sessionCode: this.sessionCode, payload: { command, issuedAt } });
 
     try {
-      const frames = await this.frameSampler.captureBurst({ frameCount: 12, intervalMs: 180 });
+      const frames = await this.frameSampler.captureBurst({ frameCount: 12, intervalMs: 180, asImageData: true });
       this.hud.bumpAttempt();
 
       const result = await this.commandVerifier.verifyCommandWindow({ frames, command });

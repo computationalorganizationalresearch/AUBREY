@@ -1,5 +1,5 @@
-export const COMMANDS = ["sit", "come", "lay down", "back"];
+export const COMMANDS = ["sit", "lay down", "shake paw", "neutral"];
 
 export function defaultMapping() {
-  return { w: "sit", a: "come", s: "lay down", d: "back" };
+  return { w: "sit", a: "lay down", s: "shake paw", d: "neutral" };
 }
