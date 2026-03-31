@@ -1,0 +1,2279 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Dog Pose + Pose Classification Overlay</title>
+  <style>
+    :root {
+      --bg: #08101d;
+      --panel: #0e1728;
+      --panel2: #15213a;
+      --border: #26324a;
+      --text: #edf3ff;
+      --muted: #98a8c8;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --err: #ef4444;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: radial-gradient(circle at top, #13213c 0%, var(--bg) 55%);
+      color: var(--text);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .app {
+      width: min(1280px, calc(100% - 14px));
+      margin: 8px auto 20px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .card {
+      background: rgba(14, 23, 40, 0.94);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 12px;
+      box-shadow: 0 18px 44px rgba(0, 0, 0, 0.32);
+      backdrop-filter: blur(8px);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.15rem;
+      letter-spacing: 0.01em;
+    }
+
+    .sub {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 8px;
+      align-items: end;
+    }
+
+    .field {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+    }
+
+    .field label {
+      font-size: 0.78rem;
+      color: var(--muted);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .field input,
+    .field select,
+    .field button {
+      width: 100%;
+      min-width: 0;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel2);
+      color: var(--text);
+      padding: 10px 11px;
+      font-size: 0.92rem;
+      outline: none;
+    }
+
+    .field input[type="file"] {
+      padding: 7px 9px;
+    }
+
+    .field input[type="checkbox"] {
+      width: auto;
+      transform: translateY(1px);
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 800;
+      background: linear-gradient(135deg, #3cc7ff, #34d399);
+      color: #03131f;
+      border: 0;
+      transition: transform 0.08s ease, opacity 0.2s ease;
+    }
+
+    button:hover { transform: translateY(-1px); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+    .toggleRow {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border);
+      background: var(--panel2);
+      border-radius: 12px;
+      padding: 9px 11px;
+      min-height: 42px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 0.88rem;
+    }
+
+    .statusRow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(21, 33, 58, 0.9);
+      border: 1px solid var(--border);
+      font-size: 0.86rem;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #64748b;
+      flex: 0 0 auto;
+    }
+
+    .dot.ok { background: var(--ok); }
+    .dot.warn { background: var(--warn); }
+    .dot.err { background: var(--err); }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.75fr) minmax(300px, 0.8fr);
+      gap: 10px;
+      align-items: start;
+    }
+
+    .stage {
+      position: relative;
+      aspect-ratio: 16 / 9;
+      min-height: 320px;
+      border-radius: 18px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: #020617;
+      contain: layout size paint;
+    }
+
+    .media, .overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      transform: translateZ(0);
+      backface-visibility: hidden;
+    }
+
+    .media {
+      object-fit: contain;
+      background: #020617;
+    }
+
+    .overlay {
+      pointer-events: none;
+    }
+
+    .side {
+      display: grid;
+      gap: 10px;
+    }
+
+    .metric {
+      border: 1px solid var(--border);
+      background: rgba(21, 33, 58, 0.78);
+      border-radius: 16px;
+      padding: 11px;
+    }
+
+    .metric h2 {
+      margin: 0 0 8px;
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+
+    .big {
+      font-size: 1.08rem;
+      font-weight: 800;
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.45;
+    }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .kpts {
+      display: grid;
+      gap: 6px;
+      max-height: 360px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .kpt {
+      display: grid;
+      grid-template-columns: 30px 1fr auto;
+      align-items: center;
+      gap: 9px;
+      background: rgba(7, 12, 24, 0.68);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 7px 9px;
+      font-size: 0.86rem;
+    }
+
+    .badge {
+      width: 27px;
+      height: 27px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-size: 0.8rem;
+      font-weight: 800;
+      text-shadow: 0 1px 1px rgba(0,0,0,0.45);
+    }
+
+    .message {
+      margin-top: 10px;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    @media (max-width: 1100px) {
+      .controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .layout { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 700px) {
+      .controls { grid-template-columns: 1fr; }
+      .app { width: min(100%, calc(100% - 10px)); }
+      .card { padding: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <section class="card">
+      <h1>Dog Pose + Pose Classification Overlay</h1>
+      <div class="sub">
+        Corrected fixed-shape ONNX pose inference with corrected output parsing and live pose-classification
+        probability bars for stand / sit / lie.
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="controls">
+        <div class="field">
+          <label for="modelPath">Pose ONNX path</label>
+          <input id="modelPath" type="text" value="dogpose_tiny.onnx" />
+        </div>
+
+        <div class="field">
+          <label for="classifierPath">Classifier JSON path</label>
+          <input id="classifierPath" type="text" value="dog_pose_model_v3.json" />
+        </div>
+
+        <div class="field">
+          <label for="sourceMode">Source</label>
+          <select id="sourceMode">
+            <option value="webcam">Webcam</option>
+            <option value="image">Image</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="confThreshold">Det confidence</label>
+          <input id="confThreshold" type="number" min="0" max="1" step="0.01" value="0.20" />
+        </div>
+
+        <div class="field">
+          <label for="cameraSelect">Camera</label>
+          <select id="cameraSelect"></select>
+        </div>
+
+        <div class="field">
+          <button id="loadModelBtn" type="button">Load Models</button>
+        </div>
+
+        <div class="field" id="imageField">
+          <label for="imageInput">Image</label>
+          <input id="imageInput" type="file" accept="image/*" />
+        </div>
+
+        <div class="field">
+          <button id="startBtn" type="button">Start Webcam</button>
+        </div>
+
+        <div class="field">
+          <button id="stopBtn" type="button">Stop</button>
+        </div>
+
+        <div class="field">
+          <button id="reloadBtn" type="button">Reload</button>
+        </div>
+
+        <div class="field">
+          <button id="snapshotBtn" type="button">Run Current Frame</button>
+        </div>
+
+        <div class="field">
+          <div class="toggleRow">
+            <input id="roiToggle" type="checkbox" checked />
+            <label for="roiToggle">ROI tracking</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="toggleRow">
+            <input id="bboxToggle" type="checkbox" checked />
+            <label for="bboxToggle">Draw bbox</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="toggleRow">
+            <input id="labelsToggle" type="checkbox" checked />
+            <label for="labelsToggle">Draw keypoint labels</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="toggleRow">
+            <input id="barsToggle" type="checkbox" checked />
+            <label for="barsToggle">Show class bars</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="toggleRow">
+            <input id="panelToggle" type="checkbox" checked />
+            <label for="panelToggle">Live panel updates</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="toggleRow">
+            <input id="mirrorToggle" type="checkbox" />
+            <label for="mirrorToggle">Mirror webcam</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="toggleRow">
+            <input id="pauseHiddenToggle" type="checkbox" checked />
+            <label for="pauseHiddenToggle">Pause when hidden</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="statusRow">
+        <div class="pill"><span id="runtimeDot" class="dot"></span><span id="runtimeStatus">Runtime not loaded</span></div>
+        <div class="pill"><span id="poseDot" class="dot"></span><span id="poseStatus">Pose model not loaded</span></div>
+        <div class="pill"><span id="clsDot" class="dot"></span><span id="clsStatus">Classifier not loaded</span></div>
+        <div class="pill"><span id="sourceDot" class="dot"></span><span id="sourceStatus">Idle</span></div>
+        <div class="pill"><span id="inferDot" class="dot"></span><span id="inferStatus">No inference yet</span></div>
+      </div>
+
+      <div id="message" class="message">
+        Serve this file from a local web server so the pose ONNX and classifier JSON load reliably.
+      </div>
+    </section>
+
+    <section class="layout">
+      <div class="card">
+        <div class="stage" id="stage">
+          <video id="video" class="media" autoplay playsinline muted></video>
+          <img id="imageView" class="media hidden" alt="Uploaded dog" />
+          <canvas id="overlay" class="overlay"></canvas>
+        </div>
+      </div>
+
+      <aside class="side">
+        <div class="metric">
+          <h2>Performance</h2>
+          <div class="big" id="perfText">Waiting</div>
+          <div class="small mono" id="perfSub">—</div>
+        </div>
+
+        <div class="metric">
+          <h2>Model Input</h2>
+          <div class="big" id="modelInputText">Unknown</div>
+          <div class="small mono" id="modelInputSub">—</div>
+        </div>
+
+        <div class="metric">
+          <h2>Pose Classification</h2>
+          <div class="big" id="classText">No prediction</div>
+          <div class="small mono" id="classSub">stand: — • sit: — • lie: —</div>
+        </div>
+
+        <div class="metric">
+          <h2>Detection</h2>
+          <div class="big" id="detText">No prediction</div>
+          <div class="small mono" id="bboxText">BBox: —</div>
+        </div>
+
+        <div class="metric">
+          <h2>Keypoints</h2>
+          <div id="kptList" class="kpts">
+            <div class="small">Start webcam or upload an image.</div>
+          </div>
+        </div>
+      </aside>
+    </section>
+  </div>
+
+<script type="module">
+  const els = {
+    modelPath: document.getElementById("modelPath"),
+    classifierPath: document.getElementById("classifierPath"),
+    sourceMode: document.getElementById("sourceMode"),
+    confThreshold: document.getElementById("confThreshold"),
+    cameraSelect: document.getElementById("cameraSelect"),
+    imageInput: document.getElementById("imageInput"),
+    imageField: document.getElementById("imageField"),
+    loadModelBtn: document.getElementById("loadModelBtn"),
+    startBtn: document.getElementById("startBtn"),
+    stopBtn: document.getElementById("stopBtn"),
+    reloadBtn: document.getElementById("reloadBtn"),
+    snapshotBtn: document.getElementById("snapshotBtn"),
+    roiToggle: document.getElementById("roiToggle"),
+    bboxToggle: document.getElementById("bboxToggle"),
+    labelsToggle: document.getElementById("labelsToggle"),
+    barsToggle: document.getElementById("barsToggle"),
+    panelToggle: document.getElementById("panelToggle"),
+    mirrorToggle: document.getElementById("mirrorToggle"),
+    pauseHiddenToggle: document.getElementById("pauseHiddenToggle"),
+    runtimeDot: document.getElementById("runtimeDot"),
+    runtimeStatus: document.getElementById("runtimeStatus"),
+    poseDot: document.getElementById("poseDot"),
+    poseStatus: document.getElementById("poseStatus"),
+    clsDot: document.getElementById("clsDot"),
+    clsStatus: document.getElementById("clsStatus"),
+    sourceDot: document.getElementById("sourceDot"),
+    sourceStatus: document.getElementById("sourceStatus"),
+    inferDot: document.getElementById("inferDot"),
+    inferStatus: document.getElementById("inferStatus"),
+    message: document.getElementById("message"),
+    stage: document.getElementById("stage"),
+    video: document.getElementById("video"),
+    imageView: document.getElementById("imageView"),
+    overlay: document.getElementById("overlay"),
+    perfText: document.getElementById("perfText"),
+    perfSub: document.getElementById("perfSub"),
+    modelInputText: document.getElementById("modelInputText"),
+    modelInputSub: document.getElementById("modelInputSub"),
+    classText: document.getElementById("classText"),
+    classSub: document.getElementById("classSub"),
+    detText: document.getElementById("detText"),
+    bboxText: document.getElementById("bboxText"),
+    kptList: document.getElementById("kptList"),
+  };
+
+  const overlayCtx = els.overlay.getContext("2d", {
+    alpha: true,
+    desynchronized: true
+  });
+
+  let ortLibPromise = null;
+  let ort = null;
+  let poseSession = null;
+  let classifierModel = null;
+  let currentProvider = "—";
+
+  let modelInputInfo = {
+    inputName: "images",
+    width: 640,
+    height: 640,
+    channels: 3,
+    batch: 1,
+    fixedShape: true
+  };
+
+  let mediaStream = null;
+  let webcamRunning = false;
+  let isImageMode = false;
+  let pausedForHidden = false;
+
+  let uploadedImage = null;
+  let latestDetection = null;
+  let latestClassResult = null;
+
+  let trackedDetection = null;
+  let trackedClassResult = null;
+  let lastDetectionTs = 0;
+
+  let smoothedProbs = { stand: 0, sit: 0, lie: 0 };
+  let lastPanelHash = "";
+  let lastPanelUpdateTs = 0;
+
+  let inferBusy = false;
+  let pendingFrame = false;
+  let loopActive = false;
+  let rvfcId = 0;
+  let rafFallbackId = 0;
+  let renderLoopId = 0;
+  let lastInferStartTs = 0;
+
+  let procCanvas = null;
+  let procCtx = null;
+  let procSize = 640;
+  let inputBuffer = null;
+  let inputTensor = null;
+  let zeroTensor = null;
+
+  const stats = {
+    fps: 0,
+    framesProcessed: 0,
+    droppedFrames: 0,
+    avgInferMs: 0,
+    lastInferMs: 0,
+    fpsCounter: 0,
+    fpsStamp: performance.now(),
+    uiStamp: 0
+  };
+
+  const roiState = {
+    active: false,
+    x1: 0,
+    y1: 0,
+    x2: 0,
+    y2: 0,
+    score: 0,
+    stableFrames: 0
+  };
+
+  const TRACKING = {
+    minScoreToUpdateRoi: 0.45,
+    minScoreToUseRoiCrop: 0.40,
+    roiPad: 1.45,
+    roiMinSideFrac: 0.18,
+    roiMinSidePx: 160,
+    roiSmoothAlpha: 0.35,
+    roiStableFramesRequired: 2,
+    maxCenterJumpAsFracOfBox: 1.25
+  };
+
+  const TRACK_VIS = {
+    holdMs: 220,
+    pointSmoothAlpha: 0.45,
+    boxSmoothAlpha: 0.35
+  };
+
+  const PANEL_UPDATE_MS = 120;
+  const MAX_INFER_FPS = 24;
+
+  function clamp(v, lo, hi) {
+    return v < lo ? lo : v > hi ? hi : v;
+  }
+
+  function lerp(a, b, t) {
+    return a + (b - a) * t;
+  }
+
+  function deepClone(obj) {
+    return JSON.parse(JSON.stringify(obj));
+  }
+
+  function setStatus(dotEl, textEl, state, text) {
+    dotEl.className = "dot";
+    if (state === "ok") dotEl.classList.add("ok");
+    if (state === "warn") dotEl.classList.add("warn");
+    if (state === "err") dotEl.classList.add("err");
+    textEl.textContent = text;
+  }
+
+  function setMessage(text, isError = false) {
+    els.message.textContent = text;
+    els.message.style.color = isError ? "var(--err)" : "var(--muted)";
+  }
+
+  function getConfThreshold() {
+    const v = Number(els.confThreshold.value);
+    return Number.isFinite(v) ? v : 0.20;
+  }
+
+  function getTrackingConfThreshold() {
+    const base = getConfThreshold();
+    return roiState.active ? Math.max(0.10, base * 0.7) : base;
+  }
+
+  function keypointColor(index) {
+    const hue = ((index - 1) * 47) % 360;
+    return `hsl(${hue} 88% 56%)`;
+  }
+
+  function updateMirror() {
+    els.video.style.transform = els.mirrorToggle.checked ? "scaleX(-1)" : "none";
+    drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement());
+  }
+
+  function updateModelInputUI() {
+    const info = modelInputInfo;
+    els.modelInputText.textContent = `${info.batch}×${info.channels}×${info.height}×${info.width}`;
+    els.modelInputSub.textContent = info.fixedShape ? `Fixed shape` : `Dynamic shape`;
+  }
+
+  function setModeUI() {
+    isImageMode = els.sourceMode.value === "image";
+    els.imageField.classList.toggle("hidden", !isImageMode);
+    els.startBtn.disabled = isImageMode;
+    els.cameraSelect.disabled = isImageMode;
+    els.video.classList.toggle("hidden", isImageMode);
+    els.imageView.classList.toggle("hidden", !isImageMode);
+
+    if (isImageMode) {
+      stopWebcam();
+      setStatus(els.sourceDot, els.sourceStatus, "warn", "Image mode");
+    } else {
+      setStatus(
+        els.sourceDot,
+        els.sourceStatus,
+        webcamRunning ? "ok" : "warn",
+        webcamRunning ? "Webcam live" : "Webcam idle"
+      );
+    }
+
+    clearROI();
+    clearOverlay();
+    latestDetection = null;
+    latestClassResult = null;
+    trackedDetection = null;
+    trackedClassResult = null;
+    smoothedProbs = { stand: 0, sit: 0, lie: 0 };
+    updateDetectionPanel(null, true);
+    updateClassificationPanel(null, true);
+  }
+
+  function ensureOverlaySize() {
+    const rect = els.stage.getBoundingClientRect();
+    const dpr = Math.max(1, Math.min(devicePixelRatio || 1, 2));
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (w !== els.overlay.width || h !== els.overlay.height) {
+      els.overlay.width = w;
+      els.overlay.height = h;
+    }
+  }
+
+  function clearOverlay() {
+    ensureOverlaySize();
+    overlayCtx.clearRect(0, 0, els.overlay.width, els.overlay.height);
+  }
+
+  function clearROI() {
+    roiState.active = false;
+    roiState.x1 = roiState.y1 = roiState.x2 = roiState.y2 = 0;
+    roiState.score = 0;
+    roiState.stableFrames = 0;
+  }
+
+  async function loadOrt() {
+    if (!ortLibPromise) {
+      ortLibPromise = import("https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/esm/ort.min.js");
+    }
+    return ortLibPromise;
+  }
+
+  async function ensureRuntime() {
+    if (ort) return ort;
+
+    setStatus(els.runtimeDot, els.runtimeStatus, "warn", "Loading runtime...");
+    const mod = await loadOrt();
+    ort = mod.default ?? mod;
+
+    ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
+    ort.env.wasm.simd = true;
+    ort.env.wasm.proxy = false;
+    ort.env.wasm.numThreads = Math.max(1, Math.min((navigator.hardwareConcurrency || 4), 8));
+
+    setStatus(els.runtimeDot, els.runtimeStatus, "ok", `Runtime loaded (${ort.env.wasm.numThreads} threads)`);
+    return ort;
+  }
+
+  function parseModelInputInfo(sess) {
+    const inputName = sess.inputNames?.[0] ?? "images";
+    const meta = sess.inputMetadata?.[inputName];
+    const dims = meta?.dimensions || [1, 3, 640, 640];
+
+    const batch = Number.isFinite(dims[0]) ? dims[0] : 1;
+    const channels = Number.isFinite(dims[1]) ? dims[1] : 3;
+    const height = Number.isFinite(dims[2]) ? dims[2] : 640;
+    const width = Number.isFinite(dims[3]) ? dims[3] : 640;
+
+    const fixedShape =
+      Number.isFinite(dims[0]) &&
+      Number.isFinite(dims[1]) &&
+      Number.isFinite(dims[2]) &&
+      Number.isFinite(dims[3]);
+
+    return { inputName, batch, channels, height, width, fixedShape };
+  }
+
+  function ensureProcessingBuffers(size) {
+    if (procCanvas && procSize === size) return;
+    procSize = size;
+
+    procCanvas = document.createElement("canvas");
+    procCanvas.width = size;
+    procCanvas.height = size;
+    procCtx = procCanvas.getContext("2d", {
+      alpha: false,
+      desynchronized: true,
+      willReadFrequently: true
+    });
+    procCtx.imageSmoothingEnabled = true;
+    procCtx.imageSmoothingQuality = "low";
+
+    inputBuffer = new Float32Array(3 * size * size);
+    inputTensor = new ort.Tensor("float32", inputBuffer, [1, 3, size, size]);
+    zeroTensor = new ort.Tensor("float32", new Float32Array(3 * size * size), [1, 3, size, size]);
+  }
+
+  async function tryCreateSession(path, providers) {
+    return ort.InferenceSession.create(path, {
+      executionProviders: providers,
+      graphOptimizationLevel: "all",
+      enableCpuMemArena: true,
+      enableMemPattern: true,
+      executionMode: "sequential"
+    });
+  }
+
+  async function loadClassifierModel(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to load classifier model: ${res.status}`);
+    return await res.json();
+  }
+
+  async function loadModels(forceReload = false) {
+    try {
+      await ensureRuntime();
+
+      if (!poseSession || forceReload) {
+        setStatus(els.poseDot, els.poseStatus, "warn", "Loading pose model...");
+        const path = els.modelPath.value.trim();
+        if (!path) throw new Error("Pose model path is empty.");
+
+        poseSession = null;
+        currentProvider = "—";
+
+        try {
+          poseSession = await tryCreateSession(path, ["webgpu", "wasm"]);
+          currentProvider = "webgpu";
+        } catch {
+          poseSession = await tryCreateSession(path, ["wasm"]);
+          currentProvider = "wasm";
+        }
+
+        modelInputInfo = parseModelInputInfo(poseSession);
+        ensureProcessingBuffers(modelInputInfo.width);
+
+        setStatus(els.poseDot, els.poseStatus, "ok", `Pose loaded (${currentProvider})`);
+        updateModelInputUI();
+        await warmupPoseSession();
+      }
+
+      if (!classifierModel || forceReload) {
+        setStatus(els.clsDot, els.clsStatus, "warn", "Loading classifier...");
+        const clsPath = els.classifierPath.value.trim();
+        if (!clsPath) throw new Error("Classifier path is empty.");
+        classifierModel = await loadClassifierModel(clsPath);
+        setStatus(
+          els.clsDot,
+          els.clsStatus,
+          "ok",
+          `Classifier loaded (${(classifierModel.classes || []).join(", ")})`
+        );
+      }
+
+      setMessage(`Models ready on ${currentProvider}.`);
+    } catch (err) {
+      console.error(err);
+      if (!poseSession) setStatus(els.poseDot, els.poseStatus, "err", "Pose load failed");
+      if (!classifierModel) setStatus(els.clsDot, els.clsStatus, "err", "Classifier load failed");
+      setMessage(err.message, true);
+      throw err;
+    }
+  }
+
+  async function warmupPoseSession() {
+    if (!poseSession) return;
+    const inputName = modelInputInfo.inputName;
+    try {
+      await poseSession.run({ [inputName]: zeroTensor });
+    } catch (e) {
+      console.warn("Warmup failed:", e);
+    }
+  }
+
+  async function listCameras() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === "videoinput");
+      els.cameraSelect.innerHTML = "";
+      if (!cams.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "No camera found";
+        els.cameraSelect.appendChild(opt);
+        return;
+      }
+      cams.forEach((cam, i) => {
+        const opt = document.createElement("option");
+        opt.value = cam.deviceId;
+        opt.textContent = cam.label || `Camera ${i + 1}`;
+        els.cameraSelect.appendChild(opt);
+      });
+    } catch (e) {
+      console.warn("Camera enumeration failed:", e);
+    }
+  }
+
+  async function startWebcam() {
+    if (isImageMode) return;
+    try {
+      await loadModels();
+      stopWebcam();
+
+      const deviceId = els.cameraSelect.value;
+      const constraints = {
+        audio: false,
+        video: {
+          deviceId: deviceId ? { exact: deviceId } : undefined,
+          facingMode: "environment",
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 60, min: 24 }
+        }
+      };
+
+      mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      els.video.srcObject = mediaStream;
+      await els.video.play();
+
+      webcamRunning = true;
+      loopActive = true;
+      pendingFrame = false;
+      clearROI();
+
+      setStatus(els.sourceDot, els.sourceStatus, "ok", "Webcam live");
+      setMessage("Webcam started. Running smoothed tracking.");
+
+      scheduleNextVideoTick();
+    } catch (err) {
+      console.error(err);
+      webcamRunning = false;
+      loopActive = false;
+      setStatus(els.sourceDot, els.sourceStatus, "err", "Webcam failed");
+      setMessage(`Could not start webcam: ${err.message}`, true);
+    }
+  }
+
+  function stopWebcam() {
+    loopActive = false;
+    webcamRunning = false;
+    pendingFrame = false;
+
+    if (rvfcId && els.video.cancelVideoFrameCallback) {
+      els.video.cancelVideoFrameCallback(rvfcId);
+      rvfcId = 0;
+    }
+    if (rafFallbackId) {
+      cancelAnimationFrame(rafFallbackId);
+      rafFallbackId = 0;
+    }
+
+    if (mediaStream) {
+      mediaStream.getTracks().forEach(t => t.stop());
+      mediaStream = null;
+    }
+
+    els.video.pause();
+    els.video.srcObject = null;
+
+    if (!isImageMode) {
+      setStatus(els.sourceDot, els.sourceStatus, "warn", "Webcam stopped");
+    }
+  }
+
+  function getActiveSourceElement() {
+    return isImageMode ? uploadedImage : els.video;
+  }
+
+  function getSourceNaturalSize(el) {
+    if (!el) return { width: 0, height: 0 };
+    if (el instanceof HTMLVideoElement) {
+      return { width: el.videoWidth || 0, height: el.videoHeight || 0 };
+    }
+    return { width: el.naturalWidth || el.width || 0, height: el.naturalHeight || el.height || 0 };
+  }
+
+  function getDisplayedMediaRect(sourceEl) {
+    const stageRect = els.stage.getBoundingClientRect();
+    const { width: sw, height: sh } = getSourceNaturalSize(sourceEl);
+    if (!sw || !sh) {
+      return { x: 0, y: 0, width: stageRect.width, height: stageRect.height };
+    }
+
+    const stageRatio = stageRect.width / stageRect.height;
+    const srcRatio = sw / sh;
+
+    let drawWidth, drawHeight, x, y;
+    if (srcRatio > stageRatio) {
+      drawWidth = stageRect.width;
+      drawHeight = drawWidth / srcRatio;
+      x = 0;
+      y = (stageRect.height - drawHeight) / 2;
+    } else {
+      drawHeight = stageRect.height;
+      drawWidth = drawHeight * srcRatio;
+      y = 0;
+      x = (stageRect.width - drawWidth) / 2;
+    }
+
+    return { x, y, width: drawWidth, height: drawHeight };
+  }
+
+  function getActivePreprocessCrop(sourceEl) {
+    const src = getSourceNaturalSize(sourceEl);
+    let sx = 0, sy = 0, sw = src.width, sh = src.height;
+
+    const canUseROI =
+      !isImageMode &&
+      els.roiToggle.checked &&
+      roiState.active &&
+      roiState.score >= TRACKING.minScoreToUseRoiCrop &&
+      roiState.stableFrames >= TRACKING.roiStableFramesRequired;
+
+    if (canUseROI) {
+      sx = clamp(Math.floor(roiState.x1), 0, src.width - 2);
+      sy = clamp(Math.floor(roiState.y1), 0, src.height - 2);
+      sw = clamp(Math.floor(roiState.x2 - roiState.x1), 2, src.width - sx);
+      sh = clamp(Math.floor(roiState.y2 - roiState.y1), 2, src.height - sy);
+    }
+
+    return { sx, sy, sw, sh };
+  }
+
+  function preprocessCurrentSourceToTensor(sourceEl) {
+    const size = modelInputInfo.width;
+    ensureProcessingBuffers(size);
+
+    const src = getSourceNaturalSize(sourceEl);
+    if (!src.width || !src.height) return inputTensor;
+
+    const { sx, sy, sw, sh } = getActivePreprocessCrop(sourceEl);
+
+    procCtx.clearRect(0, 0, size, size);
+    procCtx.drawImage(sourceEl, sx, sy, sw, sh, 0, 0, size, size);
+
+    const rgba = procCtx.getImageData(0, 0, size, size).data;
+    const plane = size * size;
+    for (let i = 0, p = 0; i < plane; i++, p += 4) {
+      inputBuffer[i] = rgba[p] * (1 / 255);
+      inputBuffer[plane + i] = rgba[p + 1] * (1 / 255);
+      inputBuffer[plane * 2 + i] = rgba[p + 2] * (1 / 255);
+    }
+    return inputTensor;
+  }
+
+  function looksLikePoseAttrCount(v) {
+    return v >= 8 && (((v - 5) % 3 === 0) || ((v - 6) % 3 === 0));
+  }
+
+  function extractBestDetection(outputTensor, confThreshold) {
+    const data = outputTensor?.data;
+    const dims = outputTensor?.dims;
+    if (!data || !dims?.length) {
+      throw new Error("Invalid output tensor.");
+    }
+
+    if (dims.length === 2) {
+      return parseRows(data, dims[0], dims[1], confThreshold);
+    }
+
+    if (dims.length === 3) {
+      const [a, b, c] = dims;
+
+      if (a === 1) {
+        if (looksLikePoseAttrCount(c) && b > 0) {
+          return parseRows(data, b, c, confThreshold);
+        }
+        if (looksLikePoseAttrCount(b) && c > 0) {
+          return parseChannelsFirst(data, c, b, confThreshold);
+        }
+      }
+
+      if (looksLikePoseAttrCount(c)) {
+        return parseRows(data, b, c, confThreshold);
+      }
+      if (looksLikePoseAttrCount(b)) {
+        return parseChannelsFirst(data, c, b, confThreshold);
+      }
+
+      const stride = dims[dims.length - 1];
+      const count = (data.length / stride) | 0;
+      return parseRows(data, count, stride, confThreshold);
+    }
+
+    const stride = dims[dims.length - 1];
+    const count = (data.length / stride) | 0;
+    return parseRows(data, count, stride, confThreshold);
+  }
+
+  function parseRows(data, count, stride, confThreshold) {
+    let bestOffset = -1;
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < count; i++) {
+      const off = i * stride;
+      const score = data[off + 4];
+      if (score >= confThreshold && score > bestScore) {
+        bestScore = score;
+        bestOffset = off;
+      }
+    }
+
+    if (bestOffset < 0) return null;
+
+    const x = data[bestOffset + 0];
+    const y = data[bestOffset + 1];
+    const w = data[bestOffset + 2];
+    const h = data[bestOffset + 3];
+
+    const keypoints = [];
+    let idx = 1;
+    for (let k = bestOffset + 5; k + 2 < bestOffset + stride; k += 3) {
+      keypoints.push({
+        index: idx++,
+        x: data[k],
+        y: data[k + 1],
+        v: data[k + 2]
+      });
+    }
+
+    return {
+      score: bestScore,
+      rawBox: { x, y, w, h },
+      keypoints
+    };
+  }
+
+  function parseChannelsFirst(data, count, channels, confThreshold) {
+    let bestIndex = -1;
+    let bestScore = -Infinity;
+
+    const confBase = 4 * count;
+    for (let i = 0; i < count; i++) {
+      const score = data[confBase + i];
+      if (score >= confThreshold && score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+
+    if (bestIndex < 0) return null;
+
+    const x = data[0 * count + bestIndex];
+    const y = data[1 * count + bestIndex];
+    const w = data[2 * count + bestIndex];
+    const h = data[3 * count + bestIndex];
+
+    const keypoints = [];
+    let kp = 1;
+    for (let c = 5; c + 2 < channels; c += 3) {
+      keypoints.push({
+        index: kp++,
+        x: data[(c + 0) * count + bestIndex],
+        y: data[(c + 1) * count + bestIndex],
+        v: data[(c + 2) * count + bestIndex]
+      });
+    }
+
+    return {
+      score: bestScore,
+      rawBox: { x, y, w, h },
+      keypoints
+    };
+  }
+
+  function bboxFromCxCyWh(raw) {
+    return {
+      cx: raw.x,
+      cy: raw.y,
+      w: Math.abs(raw.w),
+      h: Math.abs(raw.h)
+    };
+  }
+
+  function bboxFromXyWhTopLeft(raw) {
+    const w = Math.abs(raw.w);
+    const h = Math.abs(raw.h);
+    return {
+      cx: raw.x + w / 2,
+      cy: raw.y + h / 2,
+      w,
+      h
+    };
+  }
+
+  function bboxFromX1Y1X2Y2(raw) {
+    const x1 = Math.min(raw.x, raw.w);
+    const y1 = Math.min(raw.y, raw.h);
+    const x2 = Math.max(raw.x, raw.w);
+    const y2 = Math.max(raw.y, raw.h);
+    return {
+      cx: (x1 + x2) / 2,
+      cy: (y1 + y2) / 2,
+      w: Math.max(0, x2 - x1),
+      h: Math.max(0, y2 - y1)
+    };
+  }
+
+  function scoreCandidateBox(candidate, keypoints, inputSize) {
+    if (!candidate) return -Infinity;
+    if (!Number.isFinite(candidate.cx) || !Number.isFinite(candidate.cy) ||
+        !Number.isFinite(candidate.w) || !Number.isFinite(candidate.h)) {
+      return -Infinity;
+    }
+    if (candidate.w <= 2 || candidate.h <= 2) return -Infinity;
+
+    const x1 = candidate.cx - candidate.w / 2;
+    const y1 = candidate.cy - candidate.h / 2;
+    const x2 = candidate.cx + candidate.w / 2;
+    const y2 = candidate.cy + candidate.h / 2;
+
+    let score = 0;
+
+    const margin = 0.08 * Math.max(candidate.w, candidate.h);
+    let inside = 0;
+    let totalVisible = 0;
+
+    for (const kp of keypoints || []) {
+      if (!Number.isFinite(kp.x) || !Number.isFinite(kp.y)) continue;
+      if (Number.isFinite(kp.v) && kp.v <= 0) continue;
+      totalVisible++;
+      const inX = kp.x >= x1 - margin && kp.x <= x2 + margin;
+      const inY = kp.y >= y1 - margin && kp.y <= y2 + margin;
+      if (inX && inY) inside++;
+    }
+
+    if (totalVisible > 0) score += (inside / totalVisible) * 10;
+
+    const areaFrac = (candidate.w / inputSize) * (candidate.h / inputSize);
+    if (areaFrac > 0.98) score -= 3;
+    if (candidate.w > inputSize * 1.1 || candidate.h > inputSize * 1.1) score -= 4;
+
+    if (x1 < -inputSize * 0.2 || y1 < -inputSize * 0.2 ||
+        x2 > inputSize * 1.2 || y2 > inputSize * 1.2) {
+      score -= 3;
+    }
+
+    const aspect = candidate.w / Math.max(1e-6, candidate.h);
+    if (aspect < 0.12 || aspect > 8.0) score -= 2;
+
+    return score;
+  }
+
+  function normalizeDetectionBox(modelDet, inputSize) {
+    if (!modelDet?.rawBox) return null;
+
+    const candidates = [
+      { mode: "cxcywh", bbox: bboxFromCxCyWh(modelDet.rawBox) },
+      { mode: "xywh_topleft", bbox: bboxFromXyWhTopLeft(modelDet.rawBox) },
+      { mode: "xyxy", bbox: bboxFromX1Y1X2Y2(modelDet.rawBox) }
+    ];
+
+    let best = null;
+    let bestScore = -Infinity;
+
+    for (const c of candidates) {
+      const s = scoreCandidateBox(c.bbox, modelDet.keypoints, inputSize);
+      if (s > bestScore) {
+        bestScore = s;
+        best = { ...c, score: s };
+      }
+    }
+
+    if (!best) return null;
+
+    return {
+      score: modelDet.score,
+      decodeMode: best.mode,
+      bbox: {
+        x: best.bbox.cx,
+        y: best.bbox.cy,
+        w: best.bbox.w,
+        h: best.bbox.h
+      },
+      keypoints: modelDet.keypoints
+    };
+  }
+
+  function mapModelDetectionToSourcePixels(detection, sourceEl) {
+    const src = getSourceNaturalSize(sourceEl);
+    if (!src.width || !src.height || !detection) return null;
+
+    const { sx: roiX, sy: roiY, sw: roiW, sh: roiH } = getActivePreprocessCrop(sourceEl);
+    const inputW = modelInputInfo.width;
+    const inputH = modelInputInfo.height;
+    const scaleX = roiW / inputW;
+    const scaleY = roiH / inputH;
+
+    return {
+      score: detection.score,
+      decodeMode: detection.decodeMode,
+      bbox: {
+        x: roiX + detection.bbox.x * scaleX,
+        y: roiY + detection.bbox.y * scaleY,
+        w: detection.bbox.w * scaleX,
+        h: detection.bbox.h * scaleY
+      },
+      keypoints: detection.keypoints.map(kp => ({
+        index: kp.index,
+        x: roiX + kp.x * scaleX,
+        y: roiY + kp.y * scaleY,
+        v: kp.v
+      }))
+    };
+  }
+
+  function detectionLooksReasonable(det, sourceEl) {
+    if (!det || det.score < TRACKING.minScoreToUpdateRoi) return false;
+
+    const { width, height } = getSourceNaturalSize(sourceEl);
+    if (!width || !height) return false;
+
+    const bw = det.bbox.w;
+    const bh = det.bbox.h;
+    if (!Number.isFinite(bw) || !Number.isFinite(bh) || bw < 8 || bh < 8) return false;
+    if (bw > width * 1.02 || bh > height * 1.02) return false;
+
+    const cx = det.bbox.x;
+    const cy = det.bbox.y;
+    if (cx < -width * 0.1 || cx > width * 1.1 || cy < -height * 0.1 || cy > height * 1.1) {
+      return false;
+    }
+
+    if (roiState.active) {
+      const prevCx = (roiState.x1 + roiState.x2) * 0.5;
+      const prevCy = (roiState.y1 + roiState.y2) * 0.5;
+      const jump = Math.hypot(cx - prevCx, cy - prevCy);
+      const allowedJump = Math.max(bw, bh) * TRACKING.maxCenterJumpAsFracOfBox;
+      if (jump > allowedJump) return false;
+    }
+
+    return true;
+  }
+
+  function updateROIFromDetection(srcDetection, sourceEl) {
+    if (!srcDetection || isImageMode || !els.roiToggle.checked) {
+      clearROI();
+      return;
+    }
+
+    if (!detectionLooksReasonable(srcDetection, sourceEl)) {
+      roiState.stableFrames = 0;
+      roiState.score = srcDetection?.score ?? 0;
+      if (roiState.score < TRACKING.minScoreToUseRoiCrop) {
+        clearROI();
+      }
+      return;
+    }
+
+    const { width, height } = getSourceNaturalSize(sourceEl);
+    if (!width || !height) {
+      clearROI();
+      return;
+    }
+
+    const cx = srcDetection.bbox.x;
+    const cy = srcDetection.bbox.y;
+    const bw = srcDetection.bbox.w;
+    const bh = srcDetection.bbox.h;
+
+    const pad = TRACKING.roiPad;
+    let rw = bw * pad;
+    let rh = bh * pad;
+
+    const minSide = Math.max(TRACKING.roiMinSidePx, Math.min(width, height) * TRACKING.roiMinSideFrac);
+    rw = Math.max(rw, minSide);
+    rh = Math.max(rh, minSide);
+
+    let x1 = cx - rw / 2;
+    let y1 = cy - rh / 2;
+    let x2 = cx + rw / 2;
+    let y2 = cy + rh / 2;
+
+    if (x1 < 0) { x2 -= x1; x1 = 0; }
+    if (y1 < 0) { y2 -= y1; y1 = 0; }
+    if (x2 > width) { x1 -= (x2 - width); x2 = width; }
+    if (y2 > height) { y1 -= (y2 - height); y2 = height; }
+
+    x1 = clamp(x1, 0, width - 2);
+    y1 = clamp(y1, 0, height - 2);
+    x2 = clamp(x2, x1 + 2, width);
+    y2 = clamp(y2, y1 + 2, height);
+
+    if (!roiState.active) {
+      roiState.x1 = x1;
+      roiState.y1 = y1;
+      roiState.x2 = x2;
+      roiState.y2 = y2;
+      roiState.active = true;
+      roiState.stableFrames = 1;
+      roiState.score = srcDetection.score;
+      return;
+    }
+
+    const a = TRACKING.roiSmoothAlpha;
+    roiState.x1 = lerp(roiState.x1, x1, a);
+    roiState.y1 = lerp(roiState.y1, y1, a);
+    roiState.x2 = lerp(roiState.x2, x2, a);
+    roiState.y2 = lerp(roiState.y2, y2, a);
+    roiState.score = srcDetection.score;
+    roiState.stableFrames += 1;
+
+    roiState.x1 = clamp(roiState.x1, 0, width - 2);
+    roiState.y1 = clamp(roiState.y1, 0, height - 2);
+    roiState.x2 = clamp(roiState.x2, roiState.x1 + 2, width);
+    roiState.y2 = clamp(roiState.y2, roiState.y1 + 2, height);
+  }
+
+  function detectionToClassifierVector(det) {
+    if (!det || !det.keypoints?.length) return null;
+
+    const missing = classifierModel?.missing_value ?? -99.0;
+    const vec = new Array(48).fill(missing);
+
+    for (let i = 0; i < 24; i++) {
+      const kp = det.keypoints[i];
+      if (!kp) continue;
+      if (Number.isFinite(kp.x) && Number.isFinite(kp.y)) {
+        vec[2 * i] = kp.x;
+        vec[2 * i + 1] = kp.y;
+      }
+    }
+
+    return vec;
+  }
+
+  function softmax(logits) {
+    const maxLogit = Math.max(...logits);
+    const exps = logits.map(v => Math.exp(v - maxLogit));
+    const sum = exps.reduce((a, b) => a + b, 0);
+    return exps.map(v => v / sum);
+  }
+
+  function argmax(arr) {
+    let idx = 0;
+    for (let i = 1; i < arr.length; i++) if (arr[i] > arr[idx]) idx = i;
+    return idx;
+  }
+
+  function dot(a, b) {
+    let s = 0;
+    for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+    return s;
+  }
+
+  function matvec(mat, vec, bias) {
+    const out = new Array(mat[0].length).fill(0);
+    for (let j = 0; j < mat[0].length; j++) {
+      let s = bias ? bias[j] : 0;
+      for (let i = 0; i < vec.length; i++) s += vec[i] * mat[i][j];
+      out[j] = s;
+    }
+    return out;
+  }
+
+  function relu(vec) {
+    return vec.map(v => v > 0 ? v : 0);
+  }
+
+  function norm2(v) {
+    return Math.hypot(v[0], v[1]);
+  }
+
+  function meanPoints(points) {
+    if (!points.length) return null;
+    let sx = 0, sy = 0;
+    for (const p of points) {
+      sx += p[0];
+      sy += p[1];
+    }
+    return [sx / points.length, sy / points.length];
+  }
+
+  function sub(a, b) {
+    return [a[0] - b[0], a[1] - b[1]];
+  }
+
+  function sanitizeDogKeypoints(keypoints, missingValue = -99.0) {
+    if (!Array.isArray(keypoints) || keypoints.length !== 48) {
+      throw new Error("Expected a flat array with 48 values: [x1, y1, ..., x24, y24].");
+    }
+    const out = new Array(48);
+    for (let i = 0; i < 24; i++) {
+      const rawX = keypoints[2 * i];
+      const rawY = keypoints[2 * i + 1];
+      const x = Number(rawX);
+      const y = Number(rawY);
+      const isMissing =
+        rawX === null || rawY === null ||
+        rawX === undefined || rawY === undefined ||
+        x === missingValue || y === missingValue ||
+        !Number.isFinite(x) || !Number.isFinite(y);
+      out[2 * i] = isMissing ? missingValue : x;
+      out[2 * i + 1] = isMissing ? missingValue : y;
+    }
+    return out;
+  }
+
+  function extractDogPoseFeatures(keypoints, missingValue = -99.0, eps = 1e-8) {
+    const clean = sanitizeDogKeypoints(keypoints, missingValue);
+    const pts = [];
+    const visible = [];
+    for (let i = 0; i < 24; i++) {
+      const x = clean[2 * i];
+      const y = clean[2 * i + 1];
+      const isMissing = (x === missingValue || y === missingValue || !Number.isFinite(x) || !Number.isFinite(y));
+      pts.push(isMissing ? null : [x, y]);
+      visible.push(isMissing ? 0.0 : 1.0);
+    }
+
+    const get = (i) => pts[i - 1];
+    const meanOf = (indices) => meanPoints(indices.map(get).filter(Boolean));
+    const safeDist = (a, b) => (!a || !b) ? null : norm2(sub(a, b));
+    const safeAngle = (a, b, c) => {
+      if (!a || !b || !c) return null;
+      const v1 = sub(a, b);
+      const v2 = sub(c, b);
+      const n1 = norm2(v1);
+      const n2 = norm2(v2);
+      if (n1 < eps || n2 < eps) return null;
+      let cosang = (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2);
+      cosang = Math.max(-1, Math.min(1, cosang));
+      return Math.acos(cosang);
+    };
+
+    const leftBody = meanOf([12, 9, 10, 16, 20]);
+    const rightBody = meanOf([6, 3, 2, 5, 15, 19]);
+    const chestMid = meanOf([9, 11, 3, 21, 23, 24]);
+    const neckMid = meanOf([21, 22, 23, 24]);
+    const headCenter = meanOf([14, 15, 16, 17, 18, 19, 20]);
+    const visPts = pts.filter(Boolean);
+    const origin = chestMid || meanPoints(visPts) || [0.0, 0.0];
+
+    let ex;
+    if (leftBody && rightBody) ex = sub(rightBody, leftBody);
+    else if (get(12) && get(6)) ex = sub(get(6), get(12));
+    else if (get(9) && get(3)) ex = sub(get(3), get(9));
+    else ex = [1.0, 0.0];
+
+    let exn = norm2(ex);
+    if (exn < eps) {
+      ex = [1.0, 0.0];
+      exn = 1.0;
+    }
+    ex = [ex[0] / exn, ex[1] / exn];
+    const ey = [-ex[1], ex[0]];
+
+    const scaleCandidates = [
+      safeDist(get(12), get(6)),
+      safeDist(get(9), get(3)),
+      safeDist(get(10), get(2)),
+      safeDist(get(20), get(19)),
+      safeDist(get(15), get(16)),
+    ].filter(v => v !== null && v > eps);
+    const sortedScale = scaleCandidates.slice().sort((a, b) => a - b);
+    const scale = sortedScale.length ? sortedScale[Math.floor(sortedScale.length / 2)] : 1.0;
+
+    const proj = (p) => {
+      if (!p) return null;
+      const d = [(p[0] - origin[0]) / Math.max(scale, eps), (p[1] - origin[1]) / Math.max(scale, eps)];
+      return [dot(d, ex), dot(d, ey)];
+    };
+
+    const uv = {};
+    for (let i = 1; i <= 24; i++) uv[i] = proj(get(i));
+
+    const feats = [];
+    feats.push(...visible);
+
+    for (let i = 1; i <= 24; i++) {
+      if (!uv[i]) feats.push(0.0, 0.0);
+      else feats.push(uv[i][0], uv[i][1]);
+    }
+
+    const visUv = Object.values(uv).filter(Boolean);
+    let uExtent = 0.0, vExtent = 0.0;
+    if (visUv.length >= 2) {
+      const us = visUv.map(v => v[0]);
+      const vs = visUv.map(v => v[1]);
+      uExtent = Math.max(...us) - Math.min(...us);
+      vExtent = Math.max(...vs) - Math.min(...vs);
+    }
+    feats.push(uExtent, vExtent, uExtent / Math.max(vExtent, eps), vExtent / Math.max(uExtent, eps));
+
+    const pairPoints = [1,2,3,4,6,7,8,9,10,11,12,17,18,21,22,23,24];
+    for (let i = 0; i < pairPoints.length; i++) {
+      for (let j = i + 1; j < pairPoints.length; j++) {
+        const a = uv[pairPoints[i]], b = uv[pairPoints[j]];
+        feats.push((!a || !b) ? 0.0 : norm2(sub(a, b)));
+      }
+    }
+
+    for (const [aIdx, bIdx] of [[11,21],[11,17],[21,17],[7,11],[1,11],[7,21],[1,21],[4,11],[3,9],[6,12],[2,10],[19,20],[15,16],[21,23],[22,24]]) {
+      const a = uv[aIdx], b = uv[bIdx];
+      if (!a || !b) feats.push(0.0, 0.0);
+      else {
+        const d = sub(b, a);
+        feats.push(d[0], d[1]);
+      }
+    }
+
+    for (const [a, b, c] of [[10,8,7],[3,2,1],[20,17,19],[16,17,15],[11,21,17],[9,11,3],[12,21,6],[21,23,24]]) {
+      const ang = safeAngle(get(a), get(b), get(c));
+      if (ang === null) feats.push(0.0, 0.0);
+      else feats.push(Math.sin(ang), Math.cos(ang));
+    }
+
+    const addFeature = (v) => feats.push((v === null || !Number.isFinite(v)) ? 0.0 : v);
+    const leftLeg = safeDist(get(10), get(7));
+    const rightLeg = safeDist(get(2), get(1));
+    addFeature(leftLeg === null ? null : leftLeg / scale);
+    addFeature(rightLeg === null ? null : rightLeg / scale);
+    addFeature(leftLeg === null || rightLeg === null ? null : Math.abs(leftLeg - rightLeg) / scale);
+
+    for (const [aIdx, bIdx] of [[11,7],[11,1],[21,7],[21,1],[17,11],[17,21],[18,11],[4,11]]) {
+      const d = safeDist(get(aIdx), get(bIdx));
+      addFeature(d === null ? null : d / scale);
+    }
+
+    if (headCenter && chestMid) {
+      const d = [(headCenter[0] - chestMid[0]) / scale, (headCenter[1] - chestMid[1]) / scale];
+      feats.push(dot(d, ex), dot(d, ey), norm2(d));
+    } else feats.push(0.0, 0.0, 0.0);
+
+    if (neckMid && chestMid) {
+      const d = [(neckMid[0] - chestMid[0]) / scale, (neckMid[1] - chestMid[1]) / scale];
+      feats.push(dot(d, ex), dot(d, ey), norm2(d));
+    } else feats.push(0.0, 0.0, 0.0);
+
+    const front = [uv[7], uv[1]].filter(Boolean);
+    if (front.length) {
+      const mean = meanPoints(front);
+      let std = [0.0, 0.0];
+      if (front.length > 1) {
+        std = [
+          Math.sqrt(front.reduce((s, p) => s + (p[0] - mean[0]) ** 2, 0) / front.length),
+          Math.sqrt(front.reduce((s, p) => s + (p[1] - mean[1]) ** 2, 0) / front.length),
+        ];
+      }
+      const rs = front.map(p => norm2(p));
+      feats.push(mean[0], mean[1], std[0], std[1], rs.reduce((a, b) => a + b, 0) / rs.length);
+    } else feats.push(0.0, 0.0, 0.0, 0.0, 0.0);
+
+    for (const grp of [[1,2,3,4,5,6],[7,8,9,10,11,12],[13,14,15,16,17,18,19,20],[21,22,23,24]]) {
+      feats.push(grp.reduce((s, idx) => s + visible[idx - 1], 0) / grp.length);
+    }
+
+    return feats;
+  }
+
+  function classifyDogPose(keypoints, model) {
+    const features = extractDogPoseFeatures(keypoints, model.missing_value ?? -99.0);
+    if (features.length !== model.feature_count) {
+      throw new Error(`Feature length mismatch: got ${features.length}, expected ${model.feature_count}`);
+    }
+
+    let x = features.map((v, i) => (v - model.scaler_mean[i]) / (model.scaler_scale[i] || 1.0));
+    for (let layer = 0; layer < model.coefs.length - 1; layer++) {
+      x = relu(matvec(model.coefs[layer], x, model.intercepts[layer]));
+    }
+    const logits = matvec(
+      model.coefs[model.coefs.length - 1],
+      x,
+      model.intercepts[model.intercepts.length - 1]
+    );
+    const probs = softmax(logits);
+    const bestIdx = argmax(probs);
+
+    return {
+      label: model.classes[bestIdx],
+      probabilities: Object.fromEntries(model.classes.map((c, i) => [c, probs[i]])),
+      logits,
+      features,
+    };
+  }
+
+  function runClassificationFromDetection(det) {
+    if (!classifierModel || !det) return null;
+
+    try {
+      const vec = detectionToClassifierVector(det);
+      if (!vec) return null;
+
+      const raw = classifyDogPose(vec, classifierModel);
+
+      const next = {
+        stand: raw.probabilities.stand ?? 0,
+        sit: raw.probabilities.sit ?? 0,
+        lie: raw.probabilities.lie ?? 0
+      };
+
+      const alpha = isImageMode ? 1.0 : 0.8;
+
+      smoothedProbs = {
+        stand: smoothedProbs.stand * (1 - alpha) + next.stand * alpha,
+        sit: smoothedProbs.sit * (1 - alpha) + next.sit * alpha,
+        lie: smoothedProbs.lie * (1 - alpha) + next.lie * alpha
+      };
+
+      const labels = ["stand", "sit", "lie"];
+      let best = labels[0];
+      for (let i = 1; i < labels.length; i++) {
+        if (smoothedProbs[labels[i]] > smoothedProbs[best]) best = labels[i];
+      }
+
+      return {
+        label: best,
+        probabilities: { ...smoothedProbs },
+        raw,
+        vector: vec
+      };
+    } catch (err) {
+      console.warn("Classification failed:", err);
+      return null;
+    }
+  }
+
+  function updateClassificationPanel(result, force = false) {
+    if (!result) {
+      if (force || els.classText.textContent !== "No prediction") {
+        els.classText.textContent = "No prediction";
+        els.classSub.textContent = "stand: — • sit: — • lie: —";
+      }
+      return;
+    }
+
+    const p = result.probabilities;
+    els.classText.textContent = result.label;
+    els.classSub.textContent =
+      `stand: ${(p.stand * 100).toFixed(1)}% • sit: ${(p.sit * 100).toFixed(1)}% • lie: ${(p.lie * 100).toFixed(1)}%`;
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  function drawClassificationBars(ctx, result, overlayW, overlayH) {
+    if (!els.barsToggle.checked || !result) return;
+
+    const labels = ["stand", "sit", "lie"];
+    const colors = {
+      stand: "#22c55e",
+      sit: "#38bdf8",
+      lie: "#f59e0b"
+    };
+
+    const panelW = Math.min(260, overlayW * 0.34);
+    const rowH = Math.max(18, overlayH * 0.04);
+    const gap = Math.max(8, rowH * 0.45);
+    const titleH = rowH;
+    const pad = 12;
+    const panelH = pad * 2 + titleH + labels.length * rowH + (labels.length - 1) * gap;
+    const x = 16;
+    const y = 16;
+
+    ctx.save();
+    ctx.fillStyle = "rgba(4, 10, 24, 0.78)";
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.22)";
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, x, y, panelW, panelH, 12);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "#e5eefc";
+    ctx.font = `700 ${Math.max(12, rowH * 0.72)}px Inter, system-ui, sans-serif`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`Pose: ${result.label}`, x + pad, y + pad + titleH * 0.5);
+
+    const barX = x + pad + 52;
+    const barW = panelW - pad * 2 - 52 - 44;
+    let cy = y + pad + titleH + gap * 0.55;
+
+    for (const label of labels) {
+      const prob = clamp(result.probabilities[label] ?? 0, 0, 1);
+      const rowY = cy;
+      const rowCenterY = rowY + rowH * 0.5;
+
+      ctx.fillStyle = "#d7e3f7";
+      ctx.font = `600 ${Math.max(11, rowH * 0.64)}px Inter, system-ui, sans-serif`;
+      ctx.fillText(label, x + pad, rowCenterY);
+
+      ctx.fillStyle = "rgba(255,255,255,0.12)";
+      roundRect(ctx, barX, rowY, barW, rowH, rowH * 0.45);
+      ctx.fill();
+
+      ctx.fillStyle = colors[label];
+      roundRect(ctx, barX, rowY, Math.max(rowH * 0.6, barW * prob), rowH, rowH * 0.45);
+      ctx.fill();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.textAlign = "right";
+      ctx.fillText(`${(prob * 100).toFixed(0)}%`, x + panelW - pad, rowCenterY);
+      ctx.textAlign = "left";
+
+      cy += rowH + gap;
+    }
+    ctx.restore();
+  }
+
+  function drawOverlay(srcDetection, classResult, sourceEl) {
+    ensureOverlaySize();
+    overlayCtx.clearRect(0, 0, els.overlay.width, els.overlay.height);
+    if (!sourceEl) return;
+
+    const stageRect = els.stage.getBoundingClientRect();
+    const dpr = els.overlay.width / Math.max(1, stageRect.width);
+    const mediaRect = getDisplayedMediaRect(sourceEl);
+
+    const rectX = mediaRect.x * dpr;
+    const rectY = mediaRect.y * dpr;
+    const rectW = mediaRect.width * dpr;
+    const rectH = mediaRect.height * dpr;
+
+    if (classResult) {
+      drawClassificationBars(overlayCtx, classResult, els.overlay.width, els.overlay.height);
+    }
+
+    if (!srcDetection) return;
+
+    const srcSize = getSourceNaturalSize(sourceEl);
+    if (!srcSize.width || !srcSize.height) return;
+
+    const scaleX = rectW / srcSize.width;
+    const scaleY = rectH / srcSize.height;
+    const mirrored = !isImageMode && els.mirrorToggle.checked;
+
+    const lineW = Math.max(2, Math.round(Math.min(rectW, rectH) / 230));
+    const fontPx = Math.max(12, Math.round(Math.min(rectW, rectH) / 27));
+    const radius = Math.max(4, Math.round(fontPx * 0.62));
+
+    function mapX(x) {
+      if (!mirrored) return rectX + x * scaleX;
+      return rectX + (srcSize.width - x) * scaleX;
+    }
+
+    function mapY(y) {
+      return rectY + y * scaleY;
+    }
+
+    if (els.bboxToggle.checked) {
+      const bxCenter = mapX(srcDetection.bbox.x);
+      const byCenter = mapY(srcDetection.bbox.y);
+      const bw = srcDetection.bbox.w * scaleX;
+      const bh = srcDetection.bbox.h * scaleY;
+
+      overlayCtx.lineWidth = lineW;
+      overlayCtx.strokeStyle = "rgba(56,189,248,.95)";
+      overlayCtx.strokeRect(bxCenter - bw / 2, byCenter - bh / 2, bw, bh);
+    }
+
+    overlayCtx.textAlign = "center";
+    overlayCtx.textBaseline = "middle";
+    overlayCtx.font = `800 ${fontPx}px Inter, system-ui, sans-serif`;
+
+    const drawLabels = isImageMode && els.labelsToggle.checked;
+
+    for (let i = 0; i < srcDetection.keypoints.length; i++) {
+      const kp = srcDetection.keypoints[i];
+      const x = mapX(kp.x);
+      const y = mapY(kp.y);
+
+      overlayCtx.beginPath();
+      overlayCtx.fillStyle = keypointColor(kp.index);
+      overlayCtx.arc(x, y, radius, 0, Math.PI * 2);
+      overlayCtx.fill();
+
+      overlayCtx.lineWidth = Math.max(1.5, radius * 0.22);
+      overlayCtx.strokeStyle = "rgba(0,0,0,.9)";
+      overlayCtx.stroke();
+
+      if (drawLabels) {
+        overlayCtx.lineWidth = Math.max(1.8, radius * 0.28);
+        overlayCtx.strokeStyle = "rgba(0,0,0,.95)";
+        overlayCtx.strokeText(String(kp.index), x, y);
+        overlayCtx.fillStyle = "#fff";
+        overlayCtx.fillText(String(kp.index), x, y);
+      }
+    }
+  }
+
+  function smoothDetection(prev, next, alpha = 0.45) {
+    if (!next) return prev;
+    if (!prev) return deepClone(next);
+
+    return {
+      ...next,
+      bbox: {
+        x: lerp(prev.bbox.x, next.bbox.x, TRACK_VIS.boxSmoothAlpha),
+        y: lerp(prev.bbox.y, next.bbox.y, TRACK_VIS.boxSmoothAlpha),
+        w: lerp(prev.bbox.w, next.bbox.w, TRACK_VIS.boxSmoothAlpha),
+        h: lerp(prev.bbox.h, next.bbox.h, TRACK_VIS.boxSmoothAlpha)
+      },
+      keypoints: next.keypoints.map((kp, i) => {
+        const pk = prev.keypoints?.[i];
+        if (!pk || pk.index !== kp.index) return { ...kp };
+        return {
+          ...kp,
+          x: lerp(pk.x, kp.x, alpha),
+          y: lerp(pk.y, kp.y, alpha),
+          v: lerp(pk.v, kp.v, alpha)
+        };
+      })
+    };
+  }
+
+  function updateTrackedState(det, cls) {
+    if (det) {
+      trackedDetection = smoothDetection(trackedDetection, det, TRACK_VIS.pointSmoothAlpha);
+      trackedClassResult = cls ?? trackedClassResult;
+      lastDetectionTs = performance.now();
+      return;
+    }
+
+    const age = performance.now() - lastDetectionTs;
+    if (age > TRACK_VIS.holdMs) {
+      trackedDetection = null;
+      trackedClassResult = null;
+    }
+  }
+
+  function updateDetectionPanel(detection, force = false) {
+    if (!els.panelToggle.checked && !force) return;
+
+    const now = performance.now();
+    if (!force && now - lastPanelUpdateTs < PANEL_UPDATE_MS) return;
+    lastPanelUpdateTs = now;
+
+    if (!detection) {
+      if (force || lastPanelHash !== "none") {
+        els.detText.textContent = "No dog detected";
+        els.bboxText.textContent = "BBox: —";
+        els.kptList.innerHTML = '<div class="small">No keypoints passed the confidence threshold.</div>';
+        lastPanelHash = "none";
+      }
+      return;
+    }
+
+    const b = detection.bbox;
+    const hash =
+      detection.score.toFixed(3) + "|" +
+      b.x.toFixed(0) + "|" + b.y.toFixed(0) + "|" +
+      b.w.toFixed(0) + "|" + b.h.toFixed(0);
+
+    if (!force && hash === lastPanelHash) return;
+    lastPanelHash = hash;
+
+    els.detText.textContent = `Score ${detection.score.toFixed(3)} • ${detection.decodeMode || "bbox"}`;
+    els.bboxText.textContent =
+      `BBox: cx=${b.x.toFixed(1)}, cy=${b.y.toFixed(1)}, w=${b.w.toFixed(1)}, h=${b.h.toFixed(1)}`;
+
+    const frag = document.createDocumentFragment();
+    detection.keypoints.forEach((kp) => {
+      const row = document.createElement("div");
+      row.className = "kpt";
+
+      const badge = document.createElement("div");
+      badge.className = "badge";
+      badge.style.background = keypointColor(kp.index);
+      badge.textContent = kp.index;
+
+      const info = document.createElement("div");
+      info.className = "mono";
+      info.textContent = `x=${kp.x.toFixed(1)}, y=${kp.y.toFixed(1)}`;
+
+      const vis = document.createElement("div");
+      vis.className = "small mono";
+      vis.textContent = `v=${kp.v.toFixed(3)}`;
+
+      row.appendChild(badge);
+      row.appendChild(info);
+      row.appendChild(vis);
+      frag.appendChild(row);
+    });
+
+    els.kptList.innerHTML = "";
+    els.kptList.appendChild(frag);
+  }
+
+  function updatePerfUI(force = false) {
+    const now = performance.now();
+    if (!force && now - stats.uiStamp < 250) return;
+    stats.uiStamp = now;
+
+    const roiText = roiState.active
+      ? ` | roi ${Math.round(roiState.x2 - roiState.x1)}×${Math.round(roiState.y2 - roiState.y1)} s=${roiState.score.toFixed(2)}`
+      : " | roi off";
+
+    els.perfText.textContent = `${stats.fps.toFixed(1)} FPS • ${stats.lastInferMs.toFixed(1)} ms`;
+    els.perfSub.textContent =
+      `avg ${stats.avgInferMs.toFixed(1)} ms | ${currentProvider} | input ${modelInputInfo.width} | processed ${stats.framesProcessed} | dropped ${stats.droppedFrames}${roiText}`;
+
+    if (trackedDetection) {
+      setStatus(els.inferDot, els.inferStatus, "ok", "Tracking");
+    } else if (inferBusy) {
+      setStatus(els.inferDot, els.inferStatus, "warn", "Running inference...");
+    } else {
+      setStatus(els.inferDot, els.inferStatus, "warn", "No detection");
+    }
+  }
+
+  function tickFps() {
+    stats.fpsCounter++;
+    const now = performance.now();
+    const dt = now - stats.fpsStamp;
+    if (dt >= 500) {
+      stats.fps = (stats.fpsCounter * 1000) / dt;
+      stats.fpsCounter = 0;
+      stats.fpsStamp = now;
+    }
+  }
+
+  function renderOverlayLoop() {
+    drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement());
+    renderLoopId = requestAnimationFrame(renderOverlayLoop);
+  }
+
+  function startRenderLoop() {
+    if (!renderLoopId) {
+      renderLoopId = requestAnimationFrame(renderOverlayLoop);
+    }
+  }
+
+  function stopRenderLoop() {
+    if (renderLoopId) {
+      cancelAnimationFrame(renderLoopId);
+      renderLoopId = 0;
+    }
+  }
+
+  async function inferOnceFromSource() {
+    if (!poseSession || !classifierModel) await loadModels();
+    const sourceEl = getActiveSourceElement();
+    if (!sourceEl) return;
+
+    const src = getSourceNaturalSize(sourceEl);
+    if (!src.width || !src.height) return;
+
+    inferBusy = true;
+    setStatus(els.inferDot, els.inferStatus, "warn", "Running inference...");
+
+    const t0 = performance.now();
+
+    const tensor = preprocessCurrentSourceToTensor(sourceEl);
+    const inputName = modelInputInfo.inputName;
+    const outputName = poseSession.outputNames?.[0] ?? poseSession.outputNames?.[0];
+
+    const outputMap = await poseSession.run({ [inputName]: tensor });
+    const outTensor = outputMap[outputName] ?? outputMap[Object.keys(outputMap)[0]];
+    const rawDet = extractBestDetection(outTensor, getTrackingConfThreshold());
+    const normDet = rawDet ? normalizeDetectionBox(rawDet, modelInputInfo.width) : null;
+    const srcDet = normDet ? mapModelDetectionToSourcePixels(normDet, sourceEl) : null;
+    const classResult = srcDet ? runClassificationFromDetection(srcDet) : null;
+
+    const inferMs = performance.now() - t0;
+    stats.lastInferMs = inferMs;
+    stats.avgInferMs = stats.avgInferMs ? stats.avgInferMs * 0.88 + inferMs * 0.12 : inferMs;
+
+    latestDetection = srcDet;
+    latestClassResult = classResult;
+
+    updateTrackedState(srcDet, classResult);
+    updateROIFromDetection(srcDet, sourceEl);
+
+    updateDetectionPanel(trackedDetection || srcDet);
+    updateClassificationPanel(trackedClassResult || classResult);
+
+    stats.framesProcessed++;
+    tickFps();
+    updatePerfUI();
+
+    if (srcDet && classResult) {
+      setMessage(`Tracking ${srcDet.keypoints.length} keypoints • pose ${classResult.label} • ${srcDet.decodeMode || "bbox"}.`);
+    } else if (srcDet) {
+      setMessage(`Detection succeeded (${srcDet.decodeMode || "bbox"}), but classification did not produce a result.`);
+    } else {
+      updateTrackedState(null, null);
+
+      if (!roiState.active || (performance.now() - lastDetectionTs) > 180) {
+        clearROI();
+      }
+
+      updateClassificationPanel(trackedClassResult);
+      setMessage("Inference ran, but no detection passed the confidence threshold.");
+    }
+
+    inferBusy = false;
+  }
+
+  async function consumeLatestFrame() {
+    if (!loopActive || !webcamRunning || isImageMode) return;
+    if (document.hidden && els.pauseHiddenToggle.checked) return;
+
+    const now = performance.now();
+    if (now - lastInferStartTs < 1000 / MAX_INFER_FPS) {
+      return;
+    }
+
+    if (inferBusy) {
+      pendingFrame = true;
+      stats.droppedFrames++;
+      return;
+    }
+
+    const ready = els.video.readyState >= 2 && els.video.videoWidth > 0 && els.video.videoHeight > 0;
+    if (!ready) return;
+
+    lastInferStartTs = now;
+
+    try {
+      await inferOnceFromSource();
+    } catch (err) {
+      console.error(err);
+      inferBusy = false;
+      setStatus(els.inferDot, els.inferStatus, "err", "Inference failed");
+      setMessage(`Inference error: ${err.message}`, true);
+    }
+
+    if (pendingFrame) {
+      pendingFrame = false;
+      queueMicrotask(consumeLatestFrame);
+    }
+  }
+
+  function onVideoFrame() {
+    if (!loopActive || !webcamRunning || isImageMode) return;
+    pendingFrame = true;
+    consumeLatestFrame();
+    scheduleNextVideoTick();
+  }
+
+  function scheduleNextVideoTick() {
+    if (!loopActive || !webcamRunning || isImageMode) return;
+
+    if (els.video.requestVideoFrameCallback) {
+      rvfcId = els.video.requestVideoFrameCallback(() => onVideoFrame());
+    } else {
+      rafFallbackId = requestAnimationFrame(() => onVideoFrame());
+    }
+  }
+
+  async function loadImageFile(file) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.decoding = "async";
+      img.src = url;
+      await img.decode();
+      return img;
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    }
+  }
+
+  async function runImageInference() {
+    if (!uploadedImage) return;
+    try {
+      await loadModels();
+      clearROI();
+      latestDetection = null;
+      latestClassResult = null;
+      trackedDetection = null;
+      trackedClassResult = null;
+      smoothedProbs = { stand: 0, sit: 0, lie: 0 };
+      await inferOnceFromSource();
+    } catch (err) {
+      console.error(err);
+      setStatus(els.inferDot, els.inferStatus, "err", "Inference failed");
+      setMessage(`Could not run image inference: ${err.message}`, true);
+    }
+  }
+
+  function handleResize() {
+    ensureOverlaySize();
+    drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement());
+  }
+
+  function handleVisibilityChange() {
+    if (!els.pauseHiddenToggle.checked || isImageMode) return;
+
+    if (document.hidden) {
+      if (webcamRunning) {
+        pausedForHidden = true;
+        stopWebcam();
+        setMessage("Paused while tab is hidden.");
+      }
+    } else if (pausedForHidden) {
+      pausedForHidden = false;
+      startWebcam();
+    }
+  }
+
+  els.sourceMode.addEventListener("change", setModeUI);
+  els.mirrorToggle.addEventListener("change", updateMirror);
+  els.bboxToggle.addEventListener("change", () => drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement()));
+  els.labelsToggle.addEventListener("change", () => drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement()));
+  els.barsToggle.addEventListener("change", () => drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement()));
+  els.panelToggle.addEventListener("change", () => {
+    updateDetectionPanel(trackedDetection || latestDetection, true);
+    updateClassificationPanel(trackedClassResult || latestClassResult, true);
+  });
+  els.roiToggle.addEventListener("change", () => {
+    if (!els.roiToggle.checked) clearROI();
+  });
+
+  els.loadModelBtn.addEventListener("click", async () => {
+    await loadModels(false);
+    updatePerfUI(true);
+  });
+
+  els.reloadBtn.addEventListener("click", async () => {
+    poseSession = null;
+    classifierModel = null;
+    clearROI();
+    trackedDetection = null;
+    trackedClassResult = null;
+    await loadModels(true);
+    if (isImageMode && uploadedImage) await runImageInference();
+  });
+
+  els.startBtn.addEventListener("click", async () => {
+    if (isImageMode) return;
+    await startWebcam();
+  });
+
+  els.stopBtn.addEventListener("click", () => {
+    stopWebcam();
+    clearOverlay();
+    clearROI();
+    latestDetection = null;
+    latestClassResult = null;
+    trackedDetection = null;
+    trackedClassResult = null;
+    smoothedProbs = { stand: 0, sit: 0, lie: 0 };
+    updateDetectionPanel(null, true);
+    updateClassificationPanel(null, true);
+    updatePerfUI(true);
+  });
+
+  els.snapshotBtn.addEventListener("click", async () => {
+    try {
+      await inferOnceFromSource();
+    } catch (err) {
+      console.error(err);
+    }
+  });
+
+  els.imageInput.addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      uploadedImage = await loadImageFile(file);
+      els.imageView.src = uploadedImage.src;
+      clearROI();
+      trackedDetection = null;
+      trackedClassResult = null;
+      setMessage("Image loaded.");
+      if (isImageMode) await runImageInference();
+    } catch (err) {
+      console.error(err);
+      setMessage(`Could not load image: ${err.message}`, true);
+    }
+  });
+
+  els.cameraSelect.addEventListener("change", async () => {
+    if (webcamRunning && !isImageMode) await startWebcam();
+  });
+
+  window.addEventListener("resize", handleResize, { passive: true });
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+
+  async function init() {
+    setModeUI();
+    ensureOverlaySize();
+    updateMirror();
+    updateModelInputUI();
+
+    setStatus(els.runtimeDot, els.runtimeStatus, "warn", "Runtime not loaded");
+    setStatus(els.poseDot, els.poseStatus, "warn", "Pose model not loaded");
+    setStatus(els.clsDot, els.clsStatus, "warn", "Classifier not loaded");
+    setStatus(els.sourceDot, els.sourceStatus, "warn", "Idle");
+    setStatus(els.inferDot, els.inferStatus, "warn", "No inference yet");
+
+    updatePerfUI(true);
+
+    try {
+      await listCameras();
+    } catch {}
+
+    if (navigator.mediaDevices?.addEventListener) {
+      navigator.mediaDevices.addEventListener("devicechange", listCameras);
+    }
+
+    startRenderLoop();
+    loadModels(false).catch(() => {});
+  }
+
+  init();
+
+  window.addEventListener("beforeunload", () => {
+    stopWebcam();
+    stopRenderLoop();
+  });
+</script>
+</body>
+</html>
