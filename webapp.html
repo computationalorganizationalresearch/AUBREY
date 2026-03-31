@@ -411,7 +411,7 @@
     <section class="layout">
       <div class="card">
         <div class="stage" id="stage">
-          <video id="video" class="media" autoplay playsinline muted></video>
+          <video id="video" class="media" autoplay playsinline muted disablepictureinpicture></video>
           <img id="imageView" class="media hidden" alt="Uploaded dog" />
           <canvas id="overlay" class="overlay"></canvas>
         </div>
@@ -541,7 +541,8 @@
   let loopActive = false;
   let rvfcId = 0;
   let rafFallbackId = 0;
-  let renderLoopId = 0;
+  let overlayRafId = 0;
+  let overlayDirty = false;
   let lastInferStartTs = 0;
 
   let procCanvas = null;
@@ -590,7 +591,7 @@
   };
 
   const PANEL_UPDATE_MS = 120;
-  const MAX_INFER_FPS = 24;
+  const MAX_INFER_FPS = 30;
 
   function clamp(v, lo, hi) {
     return v < lo ? lo : v > hi ? hi : v;
@@ -598,10 +599,6 @@
 
   function lerp(a, b, t) {
     return a + (b - a) * t;
-  }
-
-  function deepClone(obj) {
-    return JSON.parse(JSON.stringify(obj));
   }
 
   function setStatus(dotEl, textEl, state, text) {
@@ -634,7 +631,7 @@
 
   function updateMirror() {
     els.video.style.transform = els.mirrorToggle.checked ? "scaleX(-1)" : "none";
-    drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement());
+    scheduleOverlayDraw();
   }
 
   function updateModelInputUI() {
@@ -688,6 +685,17 @@
   function clearOverlay() {
     ensureOverlaySize();
     overlayCtx.clearRect(0, 0, els.overlay.width, els.overlay.height);
+  }
+
+  function scheduleOverlayDraw() {
+    overlayDirty = true;
+    if (overlayRafId) return;
+    overlayRafId = requestAnimationFrame(() => {
+      overlayRafId = 0;
+      if (!overlayDirty) return;
+      overlayDirty = false;
+      drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement());
+    });
   }
 
   function clearROI() {
@@ -871,15 +879,19 @@
         video: {
           deviceId: deviceId ? { exact: deviceId } : undefined,
           facingMode: "environment",
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 60, min: 24 }
+          width: { ideal: 960, max: 1280 },
+          height: { ideal: 540, max: 720 },
+          frameRate: { ideal: 30, max: 60 },
+          resizeMode: "crop-and-scale"
         }
       };
 
       mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       els.video.srcObject = mediaStream;
       await els.video.play();
+      els.video.setAttribute("playsinline", "true");
+      els.video.setAttribute("webkit-playsinline", "true");
+      els.video.contentHint = "motion";
 
       webcamRunning = true;
       loopActive = true;
@@ -889,6 +901,7 @@
       setStatus(els.sourceDot, els.sourceStatus, "ok", "Webcam live");
       setMessage("Webcam started. Running smoothed tracking.");
 
+      scheduleOverlayDraw();
       scheduleNextVideoTick();
     } catch (err) {
       console.error(err);
@@ -1852,7 +1865,13 @@
 
   function smoothDetection(prev, next, alpha = 0.45) {
     if (!next) return prev;
-    if (!prev) return deepClone(next);
+    if (!prev) {
+      return {
+        ...next,
+        bbox: { ...next.bbox },
+        keypoints: next.keypoints.map((kp) => ({ ...kp }))
+      };
+    }
 
     return {
       ...next,
@@ -1981,24 +2000,6 @@
     }
   }
 
-  function renderOverlayLoop() {
-    drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement());
-    renderLoopId = requestAnimationFrame(renderOverlayLoop);
-  }
-
-  function startRenderLoop() {
-    if (!renderLoopId) {
-      renderLoopId = requestAnimationFrame(renderOverlayLoop);
-    }
-  }
-
-  function stopRenderLoop() {
-    if (renderLoopId) {
-      cancelAnimationFrame(renderLoopId);
-      renderLoopId = 0;
-    }
-  }
-
   async function inferOnceFromSource() {
     if (!poseSession || !classifierModel) await loadModels();
     const sourceEl = getActiveSourceElement();
@@ -2032,6 +2033,7 @@
 
     updateTrackedState(srcDet, classResult);
     updateROIFromDetection(srcDet, sourceEl);
+    scheduleOverlayDraw();
 
     updateDetectionPanel(trackedDetection || srcDet);
     updateClassificationPanel(trackedClassResult || classResult);
@@ -2143,7 +2145,7 @@
 
   function handleResize() {
     ensureOverlaySize();
-    drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement());
+    scheduleOverlayDraw();
   }
 
   function handleVisibilityChange() {
@@ -2163,9 +2165,9 @@
 
   els.sourceMode.addEventListener("change", setModeUI);
   els.mirrorToggle.addEventListener("change", updateMirror);
-  els.bboxToggle.addEventListener("change", () => drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement()));
-  els.labelsToggle.addEventListener("change", () => drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement()));
-  els.barsToggle.addEventListener("change", () => drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement()));
+  els.bboxToggle.addEventListener("change", scheduleOverlayDraw);
+  els.labelsToggle.addEventListener("change", scheduleOverlayDraw);
+  els.barsToggle.addEventListener("change", scheduleOverlayDraw);
   els.panelToggle.addEventListener("change", () => {
     updateDetectionPanel(trackedDetection || latestDetection, true);
     updateClassificationPanel(trackedClassResult || latestClassResult, true);
@@ -2206,6 +2208,7 @@
     updateDetectionPanel(null, true);
     updateClassificationPanel(null, true);
     updatePerfUI(true);
+    scheduleOverlayDraw();
   });
 
   els.snapshotBtn.addEventListener("click", async () => {
@@ -2228,6 +2231,7 @@
       trackedClassResult = null;
       setMessage("Image loaded.");
       if (isImageMode) await runImageInference();
+      scheduleOverlayDraw();
     } catch (err) {
       console.error(err);
       setMessage(`Could not load image: ${err.message}`, true);
@@ -2263,7 +2267,7 @@
       navigator.mediaDevices.addEventListener("devicechange", listCameras);
     }
 
-    startRenderLoop();
+    scheduleOverlayDraw();
     loadModels(false).catch(() => {});
   }
 
@@ -2271,7 +2275,7 @@
 
   window.addEventListener("beforeunload", () => {
     stopWebcam();
-    stopRenderLoop();
+    if (overlayRafId) cancelAnimationFrame(overlayRafId);
   });
 </script>
 </body>
