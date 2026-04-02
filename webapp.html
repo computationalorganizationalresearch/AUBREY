@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Dog Pose + Pose Classification Overlay</title>
+  <title>Dog ROI Gated Pose + Pose Classification Overlay</title>
   <style>
     :root {
       --bg: #08101d;
@@ -285,8 +285,8 @@
     <section class="card">
       <h1>Dog Pose + Pose Classification Overlay</h1>
       <div class="sub">
-        Browser ONNX pose inference with explicit support for YOLO pose outputs in both 5 + 3*k and
-        6 + 3*k layouts, plus a fast relative-keypoint JavaScript classifier for stand / sit / lie.
+        Fast remote YOLO dog detection gates keypoint inference so pose only runs inside detected dog regions,
+        then the cropped dog area is resized to 480×480 for far-dog robustness.
       </div>
     </section>
 
@@ -397,6 +397,7 @@
 
       <div class="statusRow">
         <div class="pill"><span id="runtimeDot" class="dot"></span><span id="runtimeStatus">Runtime not loaded</span></div>
+        <div class="pill"><span id="yoloDot" class="dot"></span><span id="yoloStatus">YOLO dog detector not loaded</span></div>
         <div class="pill"><span id="poseDot" class="dot"></span><span id="poseStatus">Pose model not loaded</span></div>
         <div class="pill"><span id="clsDot" class="dot"></span><span id="clsStatus">Classifier not loaded</span></div>
         <div class="pill"><span id="sourceDot" class="dot"></span><span id="sourceStatus">Idle</span></div>
@@ -476,6 +477,8 @@
     pauseHiddenToggle: document.getElementById("pauseHiddenToggle"),
     runtimeDot: document.getElementById("runtimeDot"),
     runtimeStatus: document.getElementById("runtimeStatus"),
+    yoloDot: document.getElementById("yoloDot"),
+    yoloStatus: document.getElementById("yoloStatus"),
     poseDot: document.getElementById("poseDot"),
     poseStatus: document.getElementById("poseStatus"),
     clsDot: document.getElementById("clsDot"),
@@ -506,7 +509,10 @@
   });
 
   let ortLibPromise = null;
+  let transformersLibPromise = null;
+  let transformersMod = null;
   let ort = null;
+  let yoloDetector = null;
   let poseSession = null;
   let classifierModel = { type: "fast-relative-linear-js" };
   let currentProvider = "—";
@@ -528,6 +534,7 @@
   let uploadedImage = null;
   let latestDetection = null;
   let latestClassResult = null;
+  let latestDogCandidate = null;
 
   let trackedDetection = null;
   let trackedClassResult = null;
@@ -553,6 +560,9 @@
   let inputBuffer = null;
   let inputTensor = null;
   let zeroTensor = null;
+  let yoloCanvas = null;
+  let yoloCtx = null;
+  let lastYoloTs = 0;
 
   const stats = {
     fps: 0,
@@ -594,6 +604,12 @@
 
   const PANEL_UPDATE_MS = 120;
   const MAX_INFER_FPS = 30;
+  const YOLO_MODEL_ID = "Xenova/yolos-tiny";
+  const YOLO_DOG_LABEL = "dog";
+  const YOLO_MIN_SCORE = 0.22;
+  const DOG_CROP_PAD = 1.22;
+  const YOLO_MAX_SIDE = 640;
+  const YOLO_INTERVAL_MS = 120;
 
   function clamp(v, lo, hi) {
     return v < lo ? lo : v > hi ? hi : v;
@@ -666,6 +682,8 @@
     clearOverlay();
     latestDetection = null;
     latestClassResult = null;
+    latestDogCandidate = null;
+    lastYoloTs = 0;
     trackedDetection = null;
     trackedClassResult = null;
     smoothedProbs = { stand: 0, sit: 0, lie: 0 };
@@ -696,7 +714,7 @@
       overlayRafId = 0;
       if (!overlayDirty) return;
       overlayDirty = false;
-      drawOverlay(trackedDetection, trackedClassResult, getActiveSourceElement());
+      drawOverlay(trackedDetection, trackedClassResult, latestDogCandidate, getActiveSourceElement());
     });
   }
 
@@ -714,6 +732,28 @@
     return ortLibPromise;
   }
 
+  async function loadTransformers() {
+    if (!transformersLibPromise) {
+      transformersLibPromise = import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2");
+    }
+    transformersMod = await transformersLibPromise;
+    return transformersMod;
+  }
+
+  async function ensureYoloDetector() {
+    if (yoloDetector) return yoloDetector;
+    setStatus(els.yoloDot, els.yoloStatus, "warn", "Loading YOLO dog detector...");
+    const tfm = await loadTransformers();
+    const env = tfm.env;
+    env.allowRemoteModels = true;
+    env.allowLocalModels = false;
+    yoloDetector = await tfm.pipeline("object-detection", YOLO_MODEL_ID, {
+      quantized: true
+    });
+    setStatus(els.yoloDot, els.yoloStatus, "ok", `YOLO ready (${YOLO_MODEL_ID})`);
+    return yoloDetector;
+  }
+
   async function ensureRuntime() {
     if (ort) return ort;
 
@@ -724,10 +764,63 @@
     ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
     ort.env.wasm.simd = true;
     ort.env.wasm.proxy = false;
-    ort.env.wasm.numThreads = Math.max(1, Math.min((navigator.hardwareConcurrency || 4), 8));
+    const canUseThreads = (typeof crossOriginIsolated !== "undefined") && crossOriginIsolated;
+    ort.env.wasm.numThreads = canUseThreads ? Math.max(1, Math.min((navigator.hardwareConcurrency || 4), 8)) : 1;
 
     setStatus(els.runtimeDot, els.runtimeStatus, "ok", `Runtime loaded (${ort.env.wasm.numThreads} threads)`);
     return ort;
+  }
+
+  function normalizeDetectorBBox(box, width, height) {
+    if (!box) return null;
+
+    const x1Raw = Number.isFinite(box.xmin) ? box.xmin : box.x ?? box.left;
+    const y1Raw = Number.isFinite(box.ymin) ? box.ymin : box.y ?? box.top;
+    const x2Raw = Number.isFinite(box.xmax) ? box.xmax : box.right;
+    const y2Raw = Number.isFinite(box.ymax) ? box.ymax : box.bottom;
+    if (![x1Raw, y1Raw, x2Raw, y2Raw].every(Number.isFinite)) return null;
+
+    const normalized = Math.max(Math.abs(x1Raw), Math.abs(y1Raw), Math.abs(x2Raw), Math.abs(y2Raw)) <= 1.25;
+    const sx = normalized ? width : 1;
+    const sy = normalized ? height : 1;
+
+    const x1 = clamp(Math.min(x1Raw, x2Raw) * sx, 0, width);
+    const y1 = clamp(Math.min(y1Raw, y2Raw) * sy, 0, height);
+    const x2 = clamp(Math.max(x1Raw, x2Raw) * sx, 0, width);
+    const y2 = clamp(Math.max(y1Raw, y2Raw) * sy, 0, height);
+    const w = Math.max(0, x2 - x1);
+    const h = Math.max(0, y2 - y1);
+    if (w < 2 || h < 2) return null;
+
+    return {
+      x: x1 + w / 2,
+      y: y1 + h / 2,
+      w,
+      h
+    };
+  }
+
+  function getYoloInputFromSource(sourceEl, sourceSize) {
+    const maxSide = Math.max(sourceSize.width, sourceSize.height);
+    const scale = maxSide > YOLO_MAX_SIDE ? (YOLO_MAX_SIDE / maxSide) : 1;
+    const w = Math.max(2, Math.round(sourceSize.width * scale));
+    const h = Math.max(2, Math.round(sourceSize.height * scale));
+
+    if (!yoloCanvas) {
+      yoloCanvas = document.createElement("canvas");
+      yoloCtx = yoloCanvas.getContext("2d", { alpha: false, desynchronized: true });
+      yoloCtx.imageSmoothingEnabled = true;
+      yoloCtx.imageSmoothingQuality = "low";
+    }
+    if (yoloCanvas.width !== w || yoloCanvas.height !== h) {
+      yoloCanvas.width = w;
+      yoloCanvas.height = h;
+    }
+
+    yoloCtx.clearRect(0, 0, w, h);
+    yoloCtx.drawImage(sourceEl, 0, 0, sourceSize.width, sourceSize.height, 0, 0, w, h);
+    const input = yoloCanvas.toDataURL("image/jpeg", 0.78);
+    return { input, width: w, height: h, invScale: 1 / scale };
   }
 
   function parseModelInputInfo(sess) {
@@ -783,6 +876,10 @@
   async function loadModels(forceReload = false) {
     try {
       await ensureRuntime();
+      if (!yoloDetector || forceReload) {
+        if (forceReload) yoloDetector = null;
+        await ensureYoloDetector();
+      }
 
       if (!poseSession || forceReload) {
         setStatus(els.poseDot, els.poseStatus, "warn", "Loading pose model...");
@@ -792,13 +889,8 @@
         poseSession = null;
         currentProvider = "—";
 
-        try {
-          poseSession = await tryCreateSession(path, ["webgpu", "wasm"]);
-          currentProvider = "webgpu";
-        } catch {
-          poseSession = await tryCreateSession(path, ["wasm"]);
-          currentProvider = "wasm";
-        }
+        poseSession = await tryCreateSession(path, ["wasm"]);
+        currentProvider = "wasm";
 
         modelInputInfo = parseModelInputInfo(poseSession);
         ensureProcessingBuffers(modelInputInfo.width, modelInputInfo.height);
@@ -816,6 +908,7 @@
       setMessage(`Models ready on ${currentProvider}. Input: ${modelInputInfo.batch}×${modelInputInfo.channels}×${modelInputInfo.height}×${modelInputInfo.width}`);
     } catch (err) {
       console.error(err);
+      if (!yoloDetector) setStatus(els.yoloDot, els.yoloStatus, "err", "YOLO load failed");
       if (!poseSession) setStatus(els.poseDot, els.poseStatus, "err", "Pose load failed");
       if (!classifierModel) setStatus(els.clsDot, els.clsStatus, "err", "Classifier load failed");
       setMessage(err.message, true);
@@ -987,7 +1080,61 @@
     return { sx, sy, sw, sh };
   }
 
-  function preprocessCurrentSourceToTensor(sourceEl) {
+  function buildPaddedCropFromBBox(bbox, sourceWidth, sourceHeight, pad = DOG_CROP_PAD) {
+    const cx = bbox.x;
+    const cy = bbox.y;
+    const side = Math.max(24, Math.max(bbox.w, bbox.h) * pad);
+    let sx = clamp(Math.round(cx - side / 2), 0, sourceWidth - 2);
+    let sy = clamp(Math.round(cy - side / 2), 0, sourceHeight - 2);
+    let sw = clamp(Math.round(side), 2, sourceWidth - sx);
+    let sh = clamp(Math.round(side), 2, sourceHeight - sy);
+
+    const forceSquare = Math.min(sw, sh);
+    sw = forceSquare;
+    sh = forceSquare;
+    if (sx + sw > sourceWidth) sx = Math.max(0, sourceWidth - sw);
+    if (sy + sh > sourceHeight) sy = Math.max(0, sourceHeight - sh);
+
+    return { sx, sy, sw, sh };
+  }
+
+  async function detectDogCandidate(sourceEl, sourceSize) {
+    const now = performance.now();
+    if (!isImageMode && latestDogCandidate && now - lastYoloTs < YOLO_INTERVAL_MS) {
+      return latestDogCandidate;
+    }
+
+    await ensureYoloDetector();
+    const yoloInput = getYoloInputFromSource(sourceEl, sourceSize);
+    const detectorOut = await yoloDetector(yoloInput.input, {
+      threshold: YOLO_MIN_SCORE,
+      percentage: false
+    });
+    const detections = Array.isArray(detectorOut) ? detectorOut : [];
+
+    let best = null;
+    for (const det of detections) {
+      const label = String(det?.label ?? "").toLowerCase();
+      if (label !== YOLO_DOG_LABEL) continue;
+      const score = Number(det?.score ?? 0);
+      const detBox = normalizeDetectorBBox(det?.box, yoloInput.width, yoloInput.height);
+      const bbox = detBox ? {
+        x: clamp(detBox.x * yoloInput.invScale, 0, sourceSize.width),
+        y: clamp(detBox.y * yoloInput.invScale, 0, sourceSize.height),
+        w: clamp(detBox.w * yoloInput.invScale, 2, sourceSize.width),
+        h: clamp(detBox.h * yoloInput.invScale, 2, sourceSize.height)
+      } : null;
+      if (!bbox) continue;
+      if (!best || score > best.score) {
+        best = { score, label, bbox };
+      }
+    }
+    lastYoloTs = now;
+    latestDogCandidate = best;
+    return best;
+  }
+
+  function preprocessCurrentSourceToTensor(sourceEl, cropOverride = null) {
     const width = modelInputInfo.width;
     const height = modelInputInfo.height;
     ensureProcessingBuffers(width, height);
@@ -995,7 +1142,7 @@
     const src = getSourceNaturalSize(sourceEl);
     if (!src.width || !src.height) return inputTensor;
 
-    const { sx, sy, sw, sh } = getActivePreprocessCrop(sourceEl);
+    const { sx, sy, sw, sh } = cropOverride ?? getActivePreprocessCrop(sourceEl);
 
     procCtx.clearRect(0, 0, width, height);
     procCtx.drawImage(sourceEl, sx, sy, sw, sh, 0, 0, width, height);
@@ -1371,11 +1518,12 @@
     };
   }
 
-  function mapModelDetectionToSourcePixels(detection, sourceEl) {
+  function mapModelDetectionToSourcePixels(detection, sourceEl, preprocessCrop) {
     const src = getSourceNaturalSize(sourceEl);
     if (!src.width || !src.height || !detection) return null;
 
-    const { sx: roiX, sy: roiY, sw: roiW, sh: roiH } = getActivePreprocessCrop(sourceEl);
+    const crop = preprocessCrop ?? getActivePreprocessCrop(sourceEl);
+    const { sx: roiX, sy: roiY, sw: roiW, sh: roiH } = crop;
     const inputW = modelInputInfo.width;
     const inputH = modelInputInfo.height;
     const scaleX = roiW / inputW;
@@ -1652,7 +1800,7 @@
     ctx.restore();
   }
 
-  function drawOverlay(srcDetection, classResult, sourceEl) {
+  function drawOverlay(srcDetection, classResult, dogCandidate, sourceEl) {
     ensureOverlaySize();
     overlayCtx.clearRect(0, 0, els.overlay.width, els.overlay.height);
     if (!sourceEl) return;
@@ -1669,8 +1817,6 @@
     if (classResult) {
       drawClassificationBars(overlayCtx, classResult, els.overlay.width, els.overlay.height);
     }
-
-    if (!srcDetection) return;
 
     const srcSize = getSourceNaturalSize(sourceEl);
     if (!srcSize.width || !srcSize.height) return;
@@ -1691,6 +1837,19 @@
     function mapY(y) {
       return rectY + y * scaleY;
     }
+
+    if (dogCandidate?.bbox) {
+      const db = dogCandidate.bbox;
+      const dx = mapX(db.x);
+      const dy = mapY(db.y);
+      const dw = db.w * scaleX;
+      const dh = db.h * scaleY;
+      overlayCtx.lineWidth = Math.max(2, lineW * 0.9);
+      overlayCtx.strokeStyle = "rgba(245, 158, 11, 0.95)";
+      overlayCtx.strokeRect(dx - dw / 2, dy - dh / 2, dw, dh);
+    }
+
+    if (!srcDetection) return;
 
     if (els.bboxToggle.checked) {
       const bxCenter = mapX(srcDetection.bbox.x);
@@ -1776,6 +1935,8 @@
     if (age > TRACK_VIS.holdMs) {
       trackedDetection = null;
       trackedClassResult = null;
+      latestDogCandidate = null;
+      lastYoloTs = 0;
     }
   }
 
@@ -1878,7 +2039,7 @@
   }
 
   async function inferOnceFromSource() {
-    if (!poseSession || !classifierModel) await loadModels();
+    if (!poseSession || !classifierModel || !yoloDetector) await loadModels();
     const sourceEl = getActiveSourceElement();
     if (!sourceEl) return;
 
@@ -1890,7 +2051,30 @@
 
     const t0 = performance.now();
 
-    const tensor = preprocessCurrentSourceToTensor(sourceEl);
+    const dogCandidate = await detectDogCandidate(sourceEl, src);
+    latestDogCandidate = dogCandidate;
+
+    if (!dogCandidate) {
+      const inferMsNoDog = performance.now() - t0;
+      stats.lastInferMs = inferMsNoDog;
+      stats.avgInferMs = stats.avgInferMs ? stats.avgInferMs * 0.88 + inferMsNoDog * 0.12 : inferMsNoDog;
+      latestDetection = null;
+      latestClassResult = null;
+      updateTrackedState(null, null);
+      clearROI();
+      scheduleOverlayDraw();
+      updateDetectionPanel(null, true);
+      updateClassificationPanel(null, true);
+      stats.framesProcessed++;
+      tickFps();
+      updatePerfUI();
+      inferBusy = false;
+      setMessage("No dog detected by YOLO, so keypoint/pose inference was skipped.");
+      return;
+    }
+
+    const dogCrop = buildPaddedCropFromBBox(dogCandidate.bbox, src.width, src.height);
+    const tensor = preprocessCurrentSourceToTensor(sourceEl, dogCrop);
     const inputName = modelInputInfo.inputName;
     const outputName = poseSession.outputNames?.[0] ?? poseSession.outputNames?.[0];
 
@@ -1898,7 +2082,7 @@
     const outTensor = outputMap[outputName] ?? outputMap[Object.keys(outputMap)[0]];
     const rawDet = extractBestDetection(outTensor, getTrackingConfThreshold());
     const normDet = rawDet ? normalizeDetectionBox(rawDet, modelInputInfo.width) : null;
-    const srcDet = normDet ? mapModelDetectionToSourcePixels(normDet, sourceEl) : null;
+    const srcDet = normDet ? mapModelDetectionToSourcePixels(normDet, sourceEl, dogCrop) : null;
     const classResult = srcDet ? runClassificationFromDetection(srcDet) : null;
 
     const inferMs = performance.now() - t0;
@@ -2009,6 +2193,8 @@
       clearROI();
       latestDetection = null;
       latestClassResult = null;
+      latestDogCandidate = null;
+      lastYoloTs = 0;
       trackedDetection = null;
       trackedClassResult = null;
       smoothedProbs = { stand: 0, sit: 0, lie: 0 };
@@ -2059,11 +2245,14 @@
   });
 
   els.reloadBtn.addEventListener("click", async () => {
+    yoloDetector = null;
     poseSession = null;
     classifierModel = null;
     clearROI();
     trackedDetection = null;
     trackedClassResult = null;
+    latestDogCandidate = null;
+    lastYoloTs = 0;
     await loadModels(true);
     if (isImageMode && uploadedImage) await runImageInference();
   });
@@ -2079,6 +2268,8 @@
     clearROI();
     latestDetection = null;
     latestClassResult = null;
+    latestDogCandidate = null;
+    lastYoloTs = 0;
     trackedDetection = null;
     trackedClassResult = null;
     smoothedProbs = { stand: 0, sit: 0, lie: 0 };
@@ -2106,6 +2297,8 @@
       clearROI();
       trackedDetection = null;
       trackedClassResult = null;
+      latestDogCandidate = null;
+      lastYoloTs = 0;
       setMessage("Image loaded.");
       if (isImageMode) await runImageInference();
       scheduleOverlayDraw();
@@ -2129,6 +2322,7 @@
     updateModelInputUI();
 
     setStatus(els.runtimeDot, els.runtimeStatus, "warn", "Runtime not loaded");
+    setStatus(els.yoloDot, els.yoloStatus, "warn", "YOLO dog detector not loaded");
     setStatus(els.poseDot, els.poseStatus, "warn", "Pose model not loaded");
     setStatus(els.clsDot, els.clsStatus, "warn", "Fast classifier not ready");
     setStatus(els.sourceDot, els.sourceStatus, "warn", "Idle");
