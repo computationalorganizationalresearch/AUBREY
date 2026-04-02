@@ -831,7 +831,27 @@
 
     yoloCtx.clearRect(0, 0, w, h);
     yoloCtx.drawImage(sourceEl, 0, 0, sourceSize.width, sourceSize.height, 0, 0, w, h);
-    return { input: yoloCanvas, width: w, height: h, invScale: 1 / scale };
+    return { canvas: yoloCanvas, width: w, height: h, invScale: 1 / scale };
+  }
+
+  async function runYoloDetector(yoloInput) {
+    try {
+      return await yoloDetector(yoloInput.canvas, {
+        threshold: YOLO_MIN_SCORE,
+        percentage: false
+      });
+    } catch (err) {
+      const msg = String(err?.message || err || "");
+      if (!msg.toLowerCase().includes("unsupported input type")) throw err;
+
+      // transformers.js v2.17.x object-detection pipeline may reject HTMLCanvasElement
+      // in some browser/runtime combinations. Fall back to URL input for compatibility.
+      const fallbackInput = yoloInput.canvas.toDataURL("image/jpeg", 0.78);
+      return yoloDetector(fallbackInput, {
+        threshold: YOLO_MIN_SCORE,
+        percentage: false
+      });
+    }
   }
 
   function parseModelInputInfo(sess) {
@@ -1134,10 +1154,7 @@
 
     await ensureYoloDetector();
     const yoloInput = getYoloInputFromSource(sourceEl, sourceSize);
-    const detectorOut = await yoloDetector(yoloInput.input, {
-      threshold: YOLO_MIN_SCORE,
-      percentage: false
-    });
+    const detectorOut = await runYoloDetector(yoloInput);
     const detections = Array.isArray(detectorOut) ? detectorOut : [];
 
     let best = null;
