@@ -513,6 +513,7 @@
   let transformersMod = null;
   let ort = null;
   let yoloDetector = null;
+  let yoloBackend = "—";
   let poseSession = null;
   let classifierModel = { type: "fast-relative-linear-js" };
   let currentProvider = "—";
@@ -609,7 +610,8 @@
   const YOLO_MIN_SCORE = 0.22;
   const DOG_CROP_PAD = 1.22;
   const YOLO_MAX_SIDE = 640;
-  const YOLO_INTERVAL_MS = 120;
+  const YOLO_INTERVAL_MS = 900;
+  const YOLO_RECHECK_WHEN_LOST_MS = 180;
 
   function clamp(v, lo, hi) {
     return v < lo ? lo : v > hi ? hi : v;
@@ -747,10 +749,20 @@
     const env = tfm.env;
     env.allowRemoteModels = true;
     env.allowLocalModels = false;
-    yoloDetector = await tfm.pipeline("object-detection", YOLO_MODEL_ID, {
-      quantized: true
-    });
-    setStatus(els.yoloDot, els.yoloStatus, "ok", `YOLO ready (${YOLO_MODEL_ID})`);
+    try {
+      yoloDetector = await tfm.pipeline("object-detection", YOLO_MODEL_ID, {
+        quantized: true,
+        device: "webgpu"
+      });
+      yoloBackend = "webgpu";
+    } catch (gpuErr) {
+      console.warn("YOLO WebGPU init failed, falling back to WASM/CPU:", gpuErr);
+      yoloDetector = await tfm.pipeline("object-detection", YOLO_MODEL_ID, {
+        quantized: true
+      });
+      yoloBackend = "wasm/cpu";
+    }
+    setStatus(els.yoloDot, els.yoloStatus, "ok", `YOLO ready (${YOLO_MODEL_ID}, ${yoloBackend})`);
     return yoloDetector;
   }
 
@@ -765,7 +777,7 @@
     ort.env.wasm.simd = true;
     ort.env.wasm.proxy = false;
     const canUseThreads = (typeof crossOriginIsolated !== "undefined") && crossOriginIsolated;
-    ort.env.wasm.numThreads = canUseThreads ? Math.max(1, Math.min((navigator.hardwareConcurrency || 4), 8)) : 1;
+    ort.env.wasm.numThreads = canUseThreads ? Math.max(2, Math.min((navigator.hardwareConcurrency || 4), 12)) : 1;
 
     setStatus(els.runtimeDot, els.runtimeStatus, "ok", `Runtime loaded (${ort.env.wasm.numThreads} threads)`);
     return ort;
@@ -819,8 +831,27 @@
 
     yoloCtx.clearRect(0, 0, w, h);
     yoloCtx.drawImage(sourceEl, 0, 0, sourceSize.width, sourceSize.height, 0, 0, w, h);
-    const input = yoloCanvas.toDataURL("image/jpeg", 0.78);
-    return { input, width: w, height: h, invScale: 1 / scale };
+    return { canvas: yoloCanvas, width: w, height: h, invScale: 1 / scale };
+  }
+
+  async function runYoloDetector(yoloInput) {
+    try {
+      return await yoloDetector(yoloInput.canvas, {
+        threshold: YOLO_MIN_SCORE,
+        percentage: false
+      });
+    } catch (err) {
+      const msg = String(err?.message || err || "");
+      if (!msg.toLowerCase().includes("unsupported input type")) throw err;
+
+      // transformers.js v2.17.x object-detection pipeline may reject HTMLCanvasElement
+      // in some browser/runtime combinations. Fall back to URL input for compatibility.
+      const fallbackInput = yoloInput.canvas.toDataURL("image/jpeg", 0.78);
+      return yoloDetector(fallbackInput, {
+        threshold: YOLO_MIN_SCORE,
+        percentage: false
+      });
+    }
   }
 
   function parseModelInputInfo(sess) {
@@ -869,7 +900,7 @@
       graphOptimizationLevel: "all",
       enableCpuMemArena: true,
       enableMemPattern: true,
-      executionMode: "sequential"
+      executionMode: "parallel"
     });
   }
 
@@ -889,8 +920,14 @@
         poseSession = null;
         currentProvider = "—";
 
-        poseSession = await tryCreateSession(path, ["wasm"]);
-        currentProvider = "wasm";
+        try {
+          poseSession = await tryCreateSession(path, ["webgpu", "wasm"]);
+          currentProvider = "webgpu/wasm";
+        } catch (gpuErr) {
+          console.warn("Pose WebGPU init failed, falling back to WASM:", gpuErr);
+          poseSession = await tryCreateSession(path, ["wasm"]);
+          currentProvider = "wasm";
+        }
 
         modelInputInfo = parseModelInputInfo(poseSession);
         ensureProcessingBuffers(modelInputInfo.width, modelInputInfo.height);
@@ -1100,16 +1137,24 @@
 
   async function detectDogCandidate(sourceEl, sourceSize) {
     const now = performance.now();
-    if (!isImageMode && latestDogCandidate && now - lastYoloTs < YOLO_INTERVAL_MS) {
+    const yoloInterval = trackedDetection ? YOLO_INTERVAL_MS : YOLO_RECHECK_WHEN_LOST_MS;
+    if (!isImageMode && latestDogCandidate && now - lastYoloTs < yoloInterval) {
+      return latestDogCandidate;
+    }
+
+    if (!isImageMode && trackedDetection?.bbox && now - lastDetectionTs < 140) {
+      latestDogCandidate = {
+        score: trackedDetection.score ?? 0,
+        label: YOLO_DOG_LABEL,
+        bbox: { ...trackedDetection.bbox },
+        inferredFromTracking: true
+      };
       return latestDogCandidate;
     }
 
     await ensureYoloDetector();
     const yoloInput = getYoloInputFromSource(sourceEl, sourceSize);
-    const detectorOut = await yoloDetector(yoloInput.input, {
-      threshold: YOLO_MIN_SCORE,
-      percentage: false
-    });
+    const detectorOut = await runYoloDetector(yoloInput);
     const detections = Array.isArray(detectorOut) ? detectorOut : [];
 
     let best = null;
