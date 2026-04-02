@@ -510,6 +510,7 @@
 
   let ortLibPromise = null;
   let transformersLibPromise = null;
+  let transformersMod = null;
   let ort = null;
   let yoloDetector = null;
   let poseSession = null;
@@ -559,6 +560,9 @@
   let inputBuffer = null;
   let inputTensor = null;
   let zeroTensor = null;
+  let yoloCanvas = null;
+  let yoloCtx = null;
+  let lastYoloTs = 0;
 
   const stats = {
     fps: 0,
@@ -604,6 +608,8 @@
   const YOLO_DOG_LABEL = "dog";
   const YOLO_MIN_SCORE = 0.22;
   const DOG_CROP_PAD = 1.22;
+  const YOLO_MAX_SIDE = 640;
+  const YOLO_INTERVAL_MS = 120;
 
   function clamp(v, lo, hi) {
     return v < lo ? lo : v > hi ? hi : v;
@@ -677,6 +683,7 @@
     latestDetection = null;
     latestClassResult = null;
     latestDogCandidate = null;
+    lastYoloTs = 0;
     trackedDetection = null;
     trackedClassResult = null;
     smoothedProbs = { stand: 0, sit: 0, lie: 0 };
@@ -729,7 +736,8 @@
     if (!transformersLibPromise) {
       transformersLibPromise = import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2");
     }
-    return transformersLibPromise;
+    transformersMod = await transformersLibPromise;
+    return transformersMod;
   }
 
   async function ensureYoloDetector() {
@@ -756,7 +764,8 @@
     ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
     ort.env.wasm.simd = true;
     ort.env.wasm.proxy = false;
-    ort.env.wasm.numThreads = Math.max(1, Math.min((navigator.hardwareConcurrency || 4), 8));
+    const canUseThreads = (typeof crossOriginIsolated !== "undefined") && crossOriginIsolated;
+    ort.env.wasm.numThreads = canUseThreads ? Math.max(1, Math.min((navigator.hardwareConcurrency || 4), 8)) : 1;
 
     setStatus(els.runtimeDot, els.runtimeStatus, "ok", `Runtime loaded (${ort.env.wasm.numThreads} threads)`);
     return ort;
@@ -789,6 +798,29 @@
       w,
       h
     };
+  }
+
+  function getYoloInputFromSource(sourceEl, sourceSize) {
+    const maxSide = Math.max(sourceSize.width, sourceSize.height);
+    const scale = maxSide > YOLO_MAX_SIDE ? (YOLO_MAX_SIDE / maxSide) : 1;
+    const w = Math.max(2, Math.round(sourceSize.width * scale));
+    const h = Math.max(2, Math.round(sourceSize.height * scale));
+
+    if (!yoloCanvas) {
+      yoloCanvas = document.createElement("canvas");
+      yoloCtx = yoloCanvas.getContext("2d", { alpha: false, desynchronized: true });
+      yoloCtx.imageSmoothingEnabled = true;
+      yoloCtx.imageSmoothingQuality = "low";
+    }
+    if (yoloCanvas.width !== w || yoloCanvas.height !== h) {
+      yoloCanvas.width = w;
+      yoloCanvas.height = h;
+    }
+
+    yoloCtx.clearRect(0, 0, w, h);
+    yoloCtx.drawImage(sourceEl, 0, 0, sourceSize.width, sourceSize.height, 0, 0, w, h);
+    const input = yoloCanvas.toDataURL("image/jpeg", 0.78);
+    return { input, width: w, height: h, invScale: 1 / scale };
   }
 
   function parseModelInputInfo(sess) {
@@ -857,13 +889,8 @@
         poseSession = null;
         currentProvider = "—";
 
-        try {
-          poseSession = await tryCreateSession(path, ["webgpu", "wasm"]);
-          currentProvider = "webgpu";
-        } catch {
-          poseSession = await tryCreateSession(path, ["wasm"]);
-          currentProvider = "wasm";
-        }
+        poseSession = await tryCreateSession(path, ["wasm"]);
+        currentProvider = "wasm";
 
         modelInputInfo = parseModelInputInfo(poseSession);
         ensureProcessingBuffers(modelInputInfo.width, modelInputInfo.height);
@@ -1072,8 +1099,14 @@
   }
 
   async function detectDogCandidate(sourceEl, sourceSize) {
+    const now = performance.now();
+    if (!isImageMode && latestDogCandidate && now - lastYoloTs < YOLO_INTERVAL_MS) {
+      return latestDogCandidate;
+    }
+
     await ensureYoloDetector();
-    const detectorOut = await yoloDetector(sourceEl, {
+    const yoloInput = getYoloInputFromSource(sourceEl, sourceSize);
+    const detectorOut = await yoloDetector(yoloInput.input, {
       threshold: YOLO_MIN_SCORE,
       percentage: false
     });
@@ -1084,12 +1117,19 @@
       const label = String(det?.label ?? "").toLowerCase();
       if (label !== YOLO_DOG_LABEL) continue;
       const score = Number(det?.score ?? 0);
-      const bbox = normalizeDetectorBBox(det?.box, sourceSize.width, sourceSize.height);
+      const detBox = normalizeDetectorBBox(det?.box, yoloInput.width, yoloInput.height);
+      const bbox = detBox ? {
+        x: clamp(detBox.x * yoloInput.invScale, 0, sourceSize.width),
+        y: clamp(detBox.y * yoloInput.invScale, 0, sourceSize.height),
+        w: clamp(detBox.w * yoloInput.invScale, 2, sourceSize.width),
+        h: clamp(detBox.h * yoloInput.invScale, 2, sourceSize.height)
+      } : null;
       if (!bbox) continue;
       if (!best || score > best.score) {
         best = { score, label, bbox };
       }
     }
+    lastYoloTs = now;
     latestDogCandidate = best;
     return best;
   }
@@ -1896,6 +1936,7 @@
       trackedDetection = null;
       trackedClassResult = null;
       latestDogCandidate = null;
+      lastYoloTs = 0;
     }
   }
 
@@ -2153,6 +2194,7 @@
       latestDetection = null;
       latestClassResult = null;
       latestDogCandidate = null;
+      lastYoloTs = 0;
       trackedDetection = null;
       trackedClassResult = null;
       smoothedProbs = { stand: 0, sit: 0, lie: 0 };
@@ -2210,6 +2252,7 @@
     trackedDetection = null;
     trackedClassResult = null;
     latestDogCandidate = null;
+    lastYoloTs = 0;
     await loadModels(true);
     if (isImageMode && uploadedImage) await runImageInference();
   });
@@ -2226,6 +2269,7 @@
     latestDetection = null;
     latestClassResult = null;
     latestDogCandidate = null;
+    lastYoloTs = 0;
     trackedDetection = null;
     trackedClassResult = null;
     smoothedProbs = { stand: 0, sit: 0, lie: 0 };
@@ -2254,6 +2298,7 @@
       trackedDetection = null;
       trackedClassResult = null;
       latestDogCandidate = null;
+      lastYoloTs = 0;
       setMessage("Image loaded.");
       if (isImageMode) await runImageInference();
       scheduleOverlayDraw();
