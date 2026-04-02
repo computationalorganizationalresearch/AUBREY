@@ -285,8 +285,8 @@
     <section class="card">
       <h1>Dog Pose + Pose Classification Overlay</h1>
       <div class="sub">
-        Corrected fixed-shape ONNX pose inference with corrected output parsing and live pose-classification
-        probability bars for stand / sit / lie.
+        Browser ONNX pose inference with explicit support for YOLO pose outputs in both 5 + 3*k and
+        6 + 3*k layouts, plus a fast relative-keypoint JavaScript classifier for stand / sit / lie.
       </div>
     </section>
 
@@ -298,8 +298,8 @@
         </div>
 
         <div class="field">
-          <label for="classifierPath">Classifier JSON path</label>
-          <input id="classifierPath" type="text" value="dog_pose_model_v3.json" />
+          <label for="classifierPath">Fast classifier JS</label>
+          <input id="classifierPath" type="text" value="dog_pose_fast_classifier.js" disabled />
         </div>
 
         <div class="field">
@@ -404,7 +404,7 @@
       </div>
 
       <div id="message" class="message">
-        Serve this file from a local web server so the pose ONNX and classifier JSON load reliably.
+        Serve this file from a local web server so the pose ONNX and fast classifier module load reliably.
       </div>
     </section>
 
@@ -453,6 +453,7 @@
   </div>
 
 <script type="module">
+  import { createRelativePoseFeatures, classifyRelativePoseFeatures } from "./dog_pose_fast_classifier.js";
   const els = {
     modelPath: document.getElementById("modelPath"),
     classifierPath: document.getElementById("classifierPath"),
@@ -507,13 +508,13 @@
   let ortLibPromise = null;
   let ort = null;
   let poseSession = null;
-  let classifierModel = null;
+  let classifierModel = { type: "fast-relative-linear-js" };
   let currentProvider = "—";
 
   let modelInputInfo = {
     inputName: "images",
-    width: 640,
-    height: 640,
+    width: 480,
+    height: 480,
     channels: 3,
     batch: 1,
     fixedShape: true
@@ -547,7 +548,8 @@
 
   let procCanvas = null;
   let procCtx = null;
-  let procSize = 640;
+  let procWidth = 480;
+  let procHeight = 480;
   let inputBuffer = null;
   let inputTensor = null;
   let zeroTensor = null;
@@ -731,12 +733,12 @@
   function parseModelInputInfo(sess) {
     const inputName = sess.inputNames?.[0] ?? "images";
     const meta = sess.inputMetadata?.[inputName];
-    const dims = meta?.dimensions || [1, 3, 640, 640];
+    const dims = meta?.dimensions || [1, 3, 480, 480];
 
     const batch = Number.isFinite(dims[0]) ? dims[0] : 1;
     const channels = Number.isFinite(dims[1]) ? dims[1] : 3;
-    const height = Number.isFinite(dims[2]) ? dims[2] : 640;
-    const width = Number.isFinite(dims[3]) ? dims[3] : 640;
+    const height = Number.isFinite(dims[2]) ? dims[2] : 480;
+    const width = Number.isFinite(dims[3]) ? dims[3] : 480;
 
     const fixedShape =
       Number.isFinite(dims[0]) &&
@@ -747,13 +749,14 @@
     return { inputName, batch, channels, height, width, fixedShape };
   }
 
-  function ensureProcessingBuffers(size) {
-    if (procCanvas && procSize === size) return;
-    procSize = size;
+  function ensureProcessingBuffers(width, height = width) {
+    if (procCanvas && procWidth === width && procHeight === height) return;
+    procWidth = width;
+    procHeight = height;
 
     procCanvas = document.createElement("canvas");
-    procCanvas.width = size;
-    procCanvas.height = size;
+    procCanvas.width = width;
+    procCanvas.height = height;
     procCtx = procCanvas.getContext("2d", {
       alpha: false,
       desynchronized: true,
@@ -762,9 +765,9 @@
     procCtx.imageSmoothingEnabled = true;
     procCtx.imageSmoothingQuality = "low";
 
-    inputBuffer = new Float32Array(3 * size * size);
-    inputTensor = new ort.Tensor("float32", inputBuffer, [1, 3, size, size]);
-    zeroTensor = new ort.Tensor("float32", new Float32Array(3 * size * size), [1, 3, size, size]);
+    inputBuffer = new Float32Array(3 * width * height);
+    inputTensor = new ort.Tensor("float32", inputBuffer, [1, 3, height, width]);
+    zeroTensor = new ort.Tensor("float32", new Float32Array(3 * width * height), [1, 3, height, width]);
   }
 
   async function tryCreateSession(path, providers) {
@@ -775,12 +778,6 @@
       enableMemPattern: true,
       executionMode: "sequential"
     });
-  }
-
-  async function loadClassifierModel(url) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Failed to load classifier model: ${res.status}`);
-    return await res.json();
   }
 
   async function loadModels(forceReload = false) {
@@ -804,7 +801,7 @@
         }
 
         modelInputInfo = parseModelInputInfo(poseSession);
-        ensureProcessingBuffers(modelInputInfo.width);
+        ensureProcessingBuffers(modelInputInfo.width, modelInputInfo.height);
 
         setStatus(els.poseDot, els.poseStatus, "ok", `Pose loaded (${currentProvider})`);
         updateModelInputUI();
@@ -812,19 +809,11 @@
       }
 
       if (!classifierModel || forceReload) {
-        setStatus(els.clsDot, els.clsStatus, "warn", "Loading classifier...");
-        const clsPath = els.classifierPath.value.trim();
-        if (!clsPath) throw new Error("Classifier path is empty.");
-        classifierModel = await loadClassifierModel(clsPath);
-        setStatus(
-          els.clsDot,
-          els.clsStatus,
-          "ok",
-          `Classifier loaded (${(classifierModel.classes || []).join(", ")})`
-        );
+        classifierModel = { type: "fast-relative-linear-js" };
       }
+      setStatus(els.clsDot, els.clsStatus, "ok", "Fast classifier ready");
 
-      setMessage(`Models ready on ${currentProvider}.`);
+      setMessage(`Models ready on ${currentProvider}. Input: ${modelInputInfo.batch}×${modelInputInfo.channels}×${modelInputInfo.height}×${modelInputInfo.width}`);
     } catch (err) {
       console.error(err);
       if (!poseSession) setStatus(els.poseDot, els.poseStatus, "err", "Pose load failed");
@@ -999,19 +988,20 @@
   }
 
   function preprocessCurrentSourceToTensor(sourceEl) {
-    const size = modelInputInfo.width;
-    ensureProcessingBuffers(size);
+    const width = modelInputInfo.width;
+    const height = modelInputInfo.height;
+    ensureProcessingBuffers(width, height);
 
     const src = getSourceNaturalSize(sourceEl);
     if (!src.width || !src.height) return inputTensor;
 
     const { sx, sy, sw, sh } = getActivePreprocessCrop(sourceEl);
 
-    procCtx.clearRect(0, 0, size, size);
-    procCtx.drawImage(sourceEl, sx, sy, sw, sh, 0, 0, size, size);
+    procCtx.clearRect(0, 0, width, height);
+    procCtx.drawImage(sourceEl, sx, sy, sw, sh, 0, 0, width, height);
 
-    const rgba = procCtx.getImageData(0, 0, size, size).data;
-    const plane = size * size;
+    const rgba = procCtx.getImageData(0, 0, width, height).data;
+    const plane = width * height;
     for (let i = 0, p = 0; i < plane; i++, p += 4) {
       inputBuffer[i] = rgba[p] * (1 / 255);
       inputBuffer[plane + i] = rgba[p + 1] * (1 / 255);
@@ -1022,6 +1012,72 @@
 
   function looksLikePoseAttrCount(v) {
     return v >= 8 && (((v - 5) % 3 === 0) || ((v - 6) % 3 === 0));
+  }
+
+  function getPoseLayout(attrCount) {
+    if (attrCount >= 8 && (attrCount - 6) % 3 === 0) {
+      return {
+        attrCount,
+        hasClassScore: true,
+        keypointStart: 6,
+        keypointCount: (attrCount - 6) / 3,
+        confidenceIndex: 4,
+        classIndex: 5
+      };
+    }
+    if (attrCount >= 8 && (attrCount - 5) % 3 === 0) {
+      return {
+        attrCount,
+        hasClassScore: false,
+        keypointStart: 5,
+        keypointCount: (attrCount - 5) / 3,
+        confidenceIndex: 4,
+        classIndex: -1
+      };
+    }
+    return null;
+  }
+
+  function sanitizeScoreValue(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function getDetectionScorePartsFromRow(data, offset, layout) {
+    const obj = sanitizeScoreValue(data[offset + layout.confidenceIndex]);
+    if (!layout.hasClassScore) {
+      return { obj, cls: 1, combined: obj };
+    }
+
+    const cls = sanitizeScoreValue(data[offset + layout.classIndex]);
+    const objTimesCls = obj * cls;
+
+    // Browser exports for single-class YOLO pose models are not always consistent
+    // about whether the class column is a calibrated probability, a near-constant 1,
+    // or a low-valued logit-like score. Use the most permissive sensible score so
+    // valid detections are not discarded before box/keypoint decoding.
+    const combined = Math.max(obj, objTimesCls, cls);
+    return { obj, cls, combined };
+  }
+
+  function getDetectionScoreFromRow(data, offset, layout) {
+    return getDetectionScorePartsFromRow(data, offset, layout).combined;
+  }
+
+  function getDetectionScorePartsFromChannelIndex(data, index, count, layout) {
+    const obj = sanitizeScoreValue(data[layout.confidenceIndex * count + index]);
+    if (!layout.hasClassScore) {
+      return { obj, cls: 1, combined: obj };
+    }
+
+    const cls = sanitizeScoreValue(data[layout.classIndex * count + index]);
+    const objTimesCls = obj * cls;
+    const combined = Math.max(obj, objTimesCls, cls);
+    return { obj, cls, combined };
+  }
+
+  function getDetectionScoreFromChannelIndex(data, index, count, layout) {
+    return getDetectionScorePartsFromChannelIndex(data, index, count, layout).combined;
   }
 
   function extractBestDetection(outputTensor, confThreshold) {
@@ -1037,21 +1093,23 @@
 
     if (dims.length === 3) {
       const [a, b, c] = dims;
+      const layoutC = getPoseLayout(c);
+      const layoutB = getPoseLayout(b);
 
       if (a === 1) {
-        if (looksLikePoseAttrCount(c) && b > 0) {
-          return parseRows(data, b, c, confThreshold);
+        if (layoutC && b > 0) {
+          return parseRows(data, b, c, confThreshold, layoutC);
         }
-        if (looksLikePoseAttrCount(b) && c > 0) {
-          return parseChannelsFirst(data, c, b, confThreshold);
+        if (layoutB && c > 0) {
+          return parseChannelsFirst(data, c, b, confThreshold, layoutB);
         }
       }
 
-      if (looksLikePoseAttrCount(c)) {
-        return parseRows(data, b, c, confThreshold);
+      if (layoutC) {
+        return parseRows(data, b, c, confThreshold, layoutC);
       }
-      if (looksLikePoseAttrCount(b)) {
-        return parseChannelsFirst(data, c, b, confThreshold);
+      if (layoutB) {
+        return parseChannelsFirst(data, c, b, confThreshold, layoutB);
       }
 
       const stride = dims[dims.length - 1];
@@ -1064,13 +1122,15 @@
     return parseRows(data, count, stride, confThreshold);
   }
 
-  function parseRows(data, count, stride, confThreshold) {
+  function parseRows(data, count, stride, confThreshold, layout = getPoseLayout(stride)) {
+    if (!layout) throw new Error(`Unsupported pose attribute count: ${stride}`);
+
     let bestOffset = -1;
     let bestScore = -Infinity;
 
     for (let i = 0; i < count; i++) {
       const off = i * stride;
-      const score = data[off + 4];
+      const score = getDetectionScoreFromRow(data, off, layout);
       if (score >= confThreshold && score > bestScore) {
         bestScore = score;
         bestOffset = off;
@@ -1086,7 +1146,7 @@
 
     const keypoints = [];
     let idx = 1;
-    for (let k = bestOffset + 5; k + 2 < bestOffset + stride; k += 3) {
+    for (let k = bestOffset + layout.keypointStart; k + 2 < bestOffset + stride; k += 3) {
       keypoints.push({
         index: idx++,
         x: data[k],
@@ -1095,20 +1155,26 @@
       });
     }
 
+    const scoreParts = getDetectionScorePartsFromRow(data, bestOffset, layout);
+
     return {
       score: bestScore,
+      objectness: scoreParts.obj,
+      classScore: scoreParts.cls,
       rawBox: { x, y, w, h },
-      keypoints
+      keypoints,
+      layout
     };
   }
 
-  function parseChannelsFirst(data, count, channels, confThreshold) {
+  function parseChannelsFirst(data, count, channels, confThreshold, layout = getPoseLayout(channels)) {
+    if (!layout) throw new Error(`Unsupported pose attribute count: ${channels}`);
+
     let bestIndex = -1;
     let bestScore = -Infinity;
 
-    const confBase = 4 * count;
     for (let i = 0; i < count; i++) {
-      const score = data[confBase + i];
+      const score = getDetectionScoreFromChannelIndex(data, i, count, layout);
       if (score >= confThreshold && score > bestScore) {
         bestScore = score;
         bestIndex = i;
@@ -1124,7 +1190,7 @@
 
     const keypoints = [];
     let kp = 1;
-    for (let c = 5; c + 2 < channels; c += 3) {
+    for (let c = layout.keypointStart; c + 2 < channels; c += 3) {
       keypoints.push({
         index: kp++,
         x: data[(c + 0) * count + bestIndex],
@@ -1133,10 +1199,15 @@
       });
     }
 
+    const scoreParts = getDetectionScorePartsFromChannelIndex(data, bestIndex, count, layout);
+
     return {
       score: bestScore,
+      objectness: scoreParts.obj,
+      classScore: scoreParts.cls,
       rawBox: { x, y, w, h },
-      keypoints
+      keypoints,
+      layout
     };
   }
 
@@ -1218,20 +1289,64 @@
     return score;
   }
 
+  function detectCoordinateScale(rawCoords, keypoints, inputSize) {
+    const kpFinite = (keypoints || []).filter(kp => Number.isFinite(kp.x) && Number.isFinite(kp.y));
+    const maxKpX = kpFinite.length ? Math.max(...kpFinite.map(kp => Math.abs(kp.x))) : 0;
+    const maxKpY = kpFinite.length ? Math.max(...kpFinite.map(kp => Math.abs(kp.y))) : 0;
+    const maxBox = Math.max(
+      Math.abs(rawCoords?.x ?? 0),
+      Math.abs(rawCoords?.y ?? 0),
+      Math.abs(rawCoords?.w ?? 0),
+      Math.abs(rawCoords?.h ?? 0)
+    );
+
+    const boxLooksNormalized = maxBox > 0 && maxBox <= 2.5;
+    const keypointsLookNormalized = kpFinite.length >= 4 && maxKpX <= 2.5 && maxKpY <= 2.5;
+
+    return {
+      boxScale: boxLooksNormalized ? inputSize : 1,
+      keypointScaleX: keypointsLookNormalized ? inputSize : 1,
+      keypointScaleY: keypointsLookNormalized ? inputSize : 1,
+      boxLooksNormalized,
+      keypointsLookNormalized
+    };
+  }
+
+  function applyCoordinateScale(modelDet, inputSize) {
+    const scaleInfo = detectCoordinateScale(modelDet?.rawBox, modelDet?.keypoints, inputSize);
+    return {
+      ...modelDet,
+      coordSpace: scaleInfo,
+      rawBox: {
+        x: modelDet.rawBox.x * scaleInfo.boxScale,
+        y: modelDet.rawBox.y * scaleInfo.boxScale,
+        w: modelDet.rawBox.w * scaleInfo.boxScale,
+        h: modelDet.rawBox.h * scaleInfo.boxScale
+      },
+      keypoints: (modelDet.keypoints || []).map(kp => ({
+        ...kp,
+        x: kp.x * scaleInfo.keypointScaleX,
+        y: kp.y * scaleInfo.keypointScaleY
+      }))
+    };
+  }
+
   function normalizeDetectionBox(modelDet, inputSize) {
     if (!modelDet?.rawBox) return null;
 
+    const scaledDet = applyCoordinateScale(modelDet, inputSize);
+
     const candidates = [
-      { mode: "cxcywh", bbox: bboxFromCxCyWh(modelDet.rawBox) },
-      { mode: "xywh_topleft", bbox: bboxFromXyWhTopLeft(modelDet.rawBox) },
-      { mode: "xyxy", bbox: bboxFromX1Y1X2Y2(modelDet.rawBox) }
+      { mode: "cxcywh", bbox: bboxFromCxCyWh(scaledDet.rawBox) },
+      { mode: "xywh_topleft", bbox: bboxFromXyWhTopLeft(scaledDet.rawBox) },
+      { mode: "xyxy", bbox: bboxFromX1Y1X2Y2(scaledDet.rawBox) }
     ];
 
     let best = null;
     let bestScore = -Infinity;
 
     for (const c of candidates) {
-      const s = scoreCandidateBox(c.bbox, modelDet.keypoints, inputSize);
+      const s = scoreCandidateBox(c.bbox, scaledDet.keypoints, inputSize);
       if (s > bestScore) {
         bestScore = s;
         best = { ...c, score: s };
@@ -1241,15 +1356,18 @@
     if (!best) return null;
 
     return {
-      score: modelDet.score,
+      score: scaledDet.score,
+      objectness: scaledDet.objectness,
+      classScore: scaledDet.classScore,
       decodeMode: best.mode,
+      coordSpace: scaledDet.coordSpace,
       bbox: {
         x: best.bbox.cx,
         y: best.bbox.cy,
         w: best.bbox.w,
         h: best.bbox.h
       },
-      keypoints: modelDet.keypoints
+      keypoints: scaledDet.keypoints
     };
   }
 
@@ -1401,264 +1519,15 @@
     return vec;
   }
 
-  function softmax(logits) {
-    const maxLogit = Math.max(...logits);
-    const exps = logits.map(v => Math.exp(v - maxLogit));
-    const sum = exps.reduce((a, b) => a + b, 0);
-    return exps.map(v => v / sum);
-  }
-
-  function argmax(arr) {
-    let idx = 0;
-    for (let i = 1; i < arr.length; i++) if (arr[i] > arr[idx]) idx = i;
-    return idx;
-  }
-
-  function dot(a, b) {
-    let s = 0;
-    for (let i = 0; i < a.length; i++) s += a[i] * b[i];
-    return s;
-  }
-
-  function matvec(mat, vec, bias) {
-    const out = new Array(mat[0].length).fill(0);
-    for (let j = 0; j < mat[0].length; j++) {
-      let s = bias ? bias[j] : 0;
-      for (let i = 0; i < vec.length; i++) s += vec[i] * mat[i][j];
-      out[j] = s;
-    }
-    return out;
-  }
-
-  function relu(vec) {
-    return vec.map(v => v > 0 ? v : 0);
-  }
-
-  function norm2(v) {
-    return Math.hypot(v[0], v[1]);
-  }
-
-  function meanPoints(points) {
-    if (!points.length) return null;
-    let sx = 0, sy = 0;
-    for (const p of points) {
-      sx += p[0];
-      sy += p[1];
-    }
-    return [sx / points.length, sy / points.length];
-  }
-
-  function sub(a, b) {
-    return [a[0] - b[0], a[1] - b[1]];
-  }
-
-  function sanitizeDogKeypoints(keypoints, missingValue = -99.0) {
-    if (!Array.isArray(keypoints) || keypoints.length !== 48) {
-      throw new Error("Expected a flat array with 48 values: [x1, y1, ..., x24, y24].");
-    }
-    const out = new Array(48);
-    for (let i = 0; i < 24; i++) {
-      const rawX = keypoints[2 * i];
-      const rawY = keypoints[2 * i + 1];
-      const x = Number(rawX);
-      const y = Number(rawY);
-      const isMissing =
-        rawX === null || rawY === null ||
-        rawX === undefined || rawY === undefined ||
-        x === missingValue || y === missingValue ||
-        !Number.isFinite(x) || !Number.isFinite(y);
-      out[2 * i] = isMissing ? missingValue : x;
-      out[2 * i + 1] = isMissing ? missingValue : y;
-    }
-    return out;
-  }
-
-  function extractDogPoseFeatures(keypoints, missingValue = -99.0, eps = 1e-8) {
-    const clean = sanitizeDogKeypoints(keypoints, missingValue);
-    const pts = [];
-    const visible = [];
-    for (let i = 0; i < 24; i++) {
-      const x = clean[2 * i];
-      const y = clean[2 * i + 1];
-      const isMissing = (x === missingValue || y === missingValue || !Number.isFinite(x) || !Number.isFinite(y));
-      pts.push(isMissing ? null : [x, y]);
-      visible.push(isMissing ? 0.0 : 1.0);
-    }
-
-    const get = (i) => pts[i - 1];
-    const meanOf = (indices) => meanPoints(indices.map(get).filter(Boolean));
-    const safeDist = (a, b) => (!a || !b) ? null : norm2(sub(a, b));
-    const safeAngle = (a, b, c) => {
-      if (!a || !b || !c) return null;
-      const v1 = sub(a, b);
-      const v2 = sub(c, b);
-      const n1 = norm2(v1);
-      const n2 = norm2(v2);
-      if (n1 < eps || n2 < eps) return null;
-      let cosang = (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2);
-      cosang = Math.max(-1, Math.min(1, cosang));
-      return Math.acos(cosang);
-    };
-
-    const leftBody = meanOf([12, 9, 10, 16, 20]);
-    const rightBody = meanOf([6, 3, 2, 5, 15, 19]);
-    const chestMid = meanOf([9, 11, 3, 21, 23, 24]);
-    const neckMid = meanOf([21, 22, 23, 24]);
-    const headCenter = meanOf([14, 15, 16, 17, 18, 19, 20]);
-    const visPts = pts.filter(Boolean);
-    const origin = chestMid || meanPoints(visPts) || [0.0, 0.0];
-
-    let ex;
-    if (leftBody && rightBody) ex = sub(rightBody, leftBody);
-    else if (get(12) && get(6)) ex = sub(get(6), get(12));
-    else if (get(9) && get(3)) ex = sub(get(3), get(9));
-    else ex = [1.0, 0.0];
-
-    let exn = norm2(ex);
-    if (exn < eps) {
-      ex = [1.0, 0.0];
-      exn = 1.0;
-    }
-    ex = [ex[0] / exn, ex[1] / exn];
-    const ey = [-ex[1], ex[0]];
-
-    const scaleCandidates = [
-      safeDist(get(12), get(6)),
-      safeDist(get(9), get(3)),
-      safeDist(get(10), get(2)),
-      safeDist(get(20), get(19)),
-      safeDist(get(15), get(16)),
-    ].filter(v => v !== null && v > eps);
-    const sortedScale = scaleCandidates.slice().sort((a, b) => a - b);
-    const scale = sortedScale.length ? sortedScale[Math.floor(sortedScale.length / 2)] : 1.0;
-
-    const proj = (p) => {
-      if (!p) return null;
-      const d = [(p[0] - origin[0]) / Math.max(scale, eps), (p[1] - origin[1]) / Math.max(scale, eps)];
-      return [dot(d, ex), dot(d, ey)];
-    };
-
-    const uv = {};
-    for (let i = 1; i <= 24; i++) uv[i] = proj(get(i));
-
-    const feats = [];
-    feats.push(...visible);
-
-    for (let i = 1; i <= 24; i++) {
-      if (!uv[i]) feats.push(0.0, 0.0);
-      else feats.push(uv[i][0], uv[i][1]);
-    }
-
-    const visUv = Object.values(uv).filter(Boolean);
-    let uExtent = 0.0, vExtent = 0.0;
-    if (visUv.length >= 2) {
-      const us = visUv.map(v => v[0]);
-      const vs = visUv.map(v => v[1]);
-      uExtent = Math.max(...us) - Math.min(...us);
-      vExtent = Math.max(...vs) - Math.min(...vs);
-    }
-    feats.push(uExtent, vExtent, uExtent / Math.max(vExtent, eps), vExtent / Math.max(uExtent, eps));
-
-    const pairPoints = [1,2,3,4,6,7,8,9,10,11,12,17,18,21,22,23,24];
-    for (let i = 0; i < pairPoints.length; i++) {
-      for (let j = i + 1; j < pairPoints.length; j++) {
-        const a = uv[pairPoints[i]], b = uv[pairPoints[j]];
-        feats.push((!a || !b) ? 0.0 : norm2(sub(a, b)));
-      }
-    }
-
-    for (const [aIdx, bIdx] of [[11,21],[11,17],[21,17],[7,11],[1,11],[7,21],[1,21],[4,11],[3,9],[6,12],[2,10],[19,20],[15,16],[21,23],[22,24]]) {
-      const a = uv[aIdx], b = uv[bIdx];
-      if (!a || !b) feats.push(0.0, 0.0);
-      else {
-        const d = sub(b, a);
-        feats.push(d[0], d[1]);
-      }
-    }
-
-    for (const [a, b, c] of [[10,8,7],[3,2,1],[20,17,19],[16,17,15],[11,21,17],[9,11,3],[12,21,6],[21,23,24]]) {
-      const ang = safeAngle(get(a), get(b), get(c));
-      if (ang === null) feats.push(0.0, 0.0);
-      else feats.push(Math.sin(ang), Math.cos(ang));
-    }
-
-    const addFeature = (v) => feats.push((v === null || !Number.isFinite(v)) ? 0.0 : v);
-    const leftLeg = safeDist(get(10), get(7));
-    const rightLeg = safeDist(get(2), get(1));
-    addFeature(leftLeg === null ? null : leftLeg / scale);
-    addFeature(rightLeg === null ? null : rightLeg / scale);
-    addFeature(leftLeg === null || rightLeg === null ? null : Math.abs(leftLeg - rightLeg) / scale);
-
-    for (const [aIdx, bIdx] of [[11,7],[11,1],[21,7],[21,1],[17,11],[17,21],[18,11],[4,11]]) {
-      const d = safeDist(get(aIdx), get(bIdx));
-      addFeature(d === null ? null : d / scale);
-    }
-
-    if (headCenter && chestMid) {
-      const d = [(headCenter[0] - chestMid[0]) / scale, (headCenter[1] - chestMid[1]) / scale];
-      feats.push(dot(d, ex), dot(d, ey), norm2(d));
-    } else feats.push(0.0, 0.0, 0.0);
-
-    if (neckMid && chestMid) {
-      const d = [(neckMid[0] - chestMid[0]) / scale, (neckMid[1] - chestMid[1]) / scale];
-      feats.push(dot(d, ex), dot(d, ey), norm2(d));
-    } else feats.push(0.0, 0.0, 0.0);
-
-    const front = [uv[7], uv[1]].filter(Boolean);
-    if (front.length) {
-      const mean = meanPoints(front);
-      let std = [0.0, 0.0];
-      if (front.length > 1) {
-        std = [
-          Math.sqrt(front.reduce((s, p) => s + (p[0] - mean[0]) ** 2, 0) / front.length),
-          Math.sqrt(front.reduce((s, p) => s + (p[1] - mean[1]) ** 2, 0) / front.length),
-        ];
-      }
-      const rs = front.map(p => norm2(p));
-      feats.push(mean[0], mean[1], std[0], std[1], rs.reduce((a, b) => a + b, 0) / rs.length);
-    } else feats.push(0.0, 0.0, 0.0, 0.0, 0.0);
-
-    for (const grp of [[1,2,3,4,5,6],[7,8,9,10,11,12],[13,14,15,16,17,18,19,20],[21,22,23,24]]) {
-      feats.push(grp.reduce((s, idx) => s + visible[idx - 1], 0) / grp.length);
-    }
-
-    return feats;
-  }
-
-  function classifyDogPose(keypoints, model) {
-    const features = extractDogPoseFeatures(keypoints, model.missing_value ?? -99.0);
-    if (features.length !== model.feature_count) {
-      throw new Error(`Feature length mismatch: got ${features.length}, expected ${model.feature_count}`);
-    }
-
-    let x = features.map((v, i) => (v - model.scaler_mean[i]) / (model.scaler_scale[i] || 1.0));
-    for (let layer = 0; layer < model.coefs.length - 1; layer++) {
-      x = relu(matvec(model.coefs[layer], x, model.intercepts[layer]));
-    }
-    const logits = matvec(
-      model.coefs[model.coefs.length - 1],
-      x,
-      model.intercepts[model.intercepts.length - 1]
-    );
-    const probs = softmax(logits);
-    const bestIdx = argmax(probs);
-
-    return {
-      label: model.classes[bestIdx],
-      probabilities: Object.fromEntries(model.classes.map((c, i) => [c, probs[i]])),
-      logits,
-      features,
-    };
-  }
-
   function runClassificationFromDetection(det) {
-    if (!classifierModel || !det) return null;
+    if (!det) return null;
 
     try {
       const vec = detectionToClassifierVector(det);
       if (!vec) return null;
 
-      const raw = classifyDogPose(vec, classifierModel);
+      const features = createRelativePoseFeatures(vec);
+      const raw = classifyRelativePoseFeatures(features);
 
       const next = {
         stand: raw.probabilities.stand ?? 0,
@@ -1684,7 +1553,8 @@
         label: best,
         probabilities: { ...smoothedProbs },
         raw,
-        vector: vec
+        vector: vec,
+        features
       };
     } catch (err) {
       console.warn("Classification failed:", err);
@@ -1935,7 +1805,14 @@
     if (!force && hash === lastPanelHash) return;
     lastPanelHash = hash;
 
-    els.detText.textContent = `Score ${detection.score.toFixed(3)} • ${detection.decodeMode || "bbox"}`;
+    const parts = [];
+    parts.push(`Score ${detection.score.toFixed(3)}`);
+    if (Number.isFinite(detection.objectness)) parts.push(`obj ${detection.objectness.toFixed(3)}`);
+    if (Number.isFinite(detection.classScore)) parts.push(`cls ${detection.classScore.toFixed(3)}`);
+    if (detection.coordSpace?.keypointsLookNormalized) parts.push('kp*input');
+    if (detection.coordSpace?.boxLooksNormalized) parts.push('box*input');
+    parts.push(detection.decodeMode || "bbox");
+    els.detText.textContent = parts.join(" • ");
     els.bboxText.textContent =
       `BBox: cx=${b.x.toFixed(1)}, cy=${b.y.toFixed(1)}, w=${b.w.toFixed(1)}, h=${b.h.toFixed(1)}`;
 
@@ -2253,7 +2130,7 @@
 
     setStatus(els.runtimeDot, els.runtimeStatus, "warn", "Runtime not loaded");
     setStatus(els.poseDot, els.poseStatus, "warn", "Pose model not loaded");
-    setStatus(els.clsDot, els.clsStatus, "warn", "Classifier not loaded");
+    setStatus(els.clsDot, els.clsStatus, "warn", "Fast classifier not ready");
     setStatus(els.sourceDot, els.sourceStatus, "warn", "Idle");
     setStatus(els.inferDot, els.inferStatus, "warn", "No inference yet");
 
